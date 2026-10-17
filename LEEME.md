@@ -28,6 +28,16 @@ La app tiene que estar en una web (https) para instalarla en el móvil:
 
 Funciona sin conexión. La primera vez, importa tu `.docx` desde el menú ⋯ → «Desde un documento Word».
 
+## Recordatorio
+
+En ⋯ → «Recordatorio» puedes activar un aviso si pasan 3 días sin apuntar nada (por ejemplo, si lo último lo apuntaste un lunes, avisa el jueves). Si sigues sin apuntar, se repite cada 3 días. Solo avisa entre las 9:00 y las 22:00, y al tocarlo se abre el editor de hoy.
+
+Para que llegue con la app cerrada:
+
+- Usa Chrome en Android e **instala la app** (menú ⋮ → «Instalar aplicación»). Chrome solo despierta en segundo plano a las apps instaladas.
+- Chrome decide cuándo hacer la comprobación (un par de veces al día), así que el aviso puede llegar unas horas más tarde. Si el móvil tiene ahorro de batería agresivo, quita la restricción a Chrome.
+- El permiso de notificaciones es común a todas tus apps de `github.io`.
+
 ## Copias de seguridad
 
 Los recuerdos se guardan **solo en el dispositivo** donde los apuntas. Desde ⋯ → «Descargar copia de seguridad» obtienes un `.json` que puedes guardar en la nube o restaurar en otro dispositivo. El punto naranja del menú te avisa si llevas más de un mes sin hacer copia.

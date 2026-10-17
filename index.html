@@ -137,6 +137,14 @@
       <button class="menu-item" data-action="export-text"><strong>Ver como texto</strong><span>El formato de siempre, para copiar o guardar.</span></button>
     </div>
     <div class="menu-group">
+      <h3>Recordatorio</h3>
+      <div class="reminder-box">
+        <label class="switch"><input type="checkbox" id="reminder-toggle"><span class="switch-ui"></span>Avisarme si pasan 3 días sin apuntar nada</label>
+        <p class="reminder-status" id="reminder-status"></p>
+        <button type="button" class="btn btn-ghost" id="reminder-test" hidden>Probar el aviso</button>
+      </div>
+    </div>
+    <div class="menu-group">
       <h3>Apariencia</h3>
       <div class="segmented" id="theme-seg">
         <button data-theme-opt="auto">Automático</button>
@@ -212,6 +220,7 @@
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
   <script src="importer.js"></script>
+  <script src="recordatorio.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

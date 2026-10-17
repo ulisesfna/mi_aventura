@@ -5,20 +5,66 @@
  * service worker solo crea, lee y borra cachés que empiezan por PREFIX.
  * Para publicar una versión nueva basta con subir el número de VERSION.
  */
+importScripts('recordatorio.js');
+const R = self.MiAventuraRecordatorio;
+
 const PREFIX = 'mi-aventura-';
-const VERSION = PREFIX + 'v2';
+const VERSION = PREFIX + 'v3';
 const SHELL = [
   './',
   'index.html',
   'styles.css',
   'app.js',
   'importer.js',
+  'recordatorio.js',
   'manifest.webmanifest',
   'icons/icon.svg',
   'icons/icon-180.png',
   'icons/icon-192.png',
   'icons/icon-512.png',
+  'icons/badge-96.png',
 ];
+
+/* ---------- recordatorio tras varios días sin apuntar nada ---------- */
+async function remind(test) {
+  const idle = test ? 0 : R.due(await R.load());
+  if (!test && !idle) return;
+  await self.registration.showNotification('Mi aventura', {
+    body: test ? `Prueba: así te avisaré cuando pasen ${R.DAYS} días sin apuntar nada.` : R.text(idle),
+    tag: R.TAG,
+    icon: 'icons/icon-192.png',
+    badge: 'icons/badge-96.png',
+    data: { nuevo: true },
+    actions: [{ action: 'nuevo', title: 'Apuntar ahora' }],
+  });
+  if (!test) await R.update({ lastNotified: Date.now() });
+}
+
+// Chrome (Android, app instalada) despierta al service worker un par de veces al día
+self.addEventListener('periodicsync', (event) => {
+  if (event.tag === R.TAG) event.waitUntil(remind(false));
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'mi-aventura:probar') event.waitUntil(remind(true));
+});
+
+// Al tocar el aviso: abre Mi aventura (nunca otra app del mismo dominio) con el editor de hoy
+self.addEventListener('notificationclick', (event) => {
+  if (event.notification.tag !== R.TAG) return;
+  event.notification.close();
+  event.waitUntil((async () => {
+    const scope = self.registration.scope;
+    const wins = (await self.clients.matchAll({ type: 'window', includeUncontrolled: true }))
+      .filter((c) => c.url.startsWith(scope));
+    if (wins.length) {
+      await wins[0].focus();
+      wins[0].postMessage({ type: 'mi-aventura:nuevo' });
+    } else {
+      await self.clients.openWindow(scope + '#nuevo');
+    }
+  })());
+});
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

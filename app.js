@@ -649,6 +649,7 @@
     data.days[k] = entry;
     if (typeof trip === 'string') propagateTripName(k, trip);
     save();
+    touchActivity();
     editor.close();
     revealDay(k);
     toast(orig ? 'Cambios guardados' : 'Recuerdo guardado');
@@ -856,6 +857,7 @@
       n++;
     }
     save();
+    if (n) touchActivity();
     importer.close();
     const ys = Object.keys(pending.days).map((k) => +k.slice(0, 4));
     const cy = new Date().getFullYear();
@@ -924,6 +926,86 @@
       ? `Última copia: ${days === 0 ? 'hoy' : days === 1 ? 'ayer' : `hace ${days} días`}.`
       : 'Tus recuerdos se guardan solo en este dispositivo. Haz copias de vez en cuando.';
   }
+
+  /* ---------- recordatorio ---------- */
+  const R = window.MiAventuraRecordatorio;
+  const REMINDER_MSG = {
+    off: `Te llegará una notificación si pasan ${R.DAYS} días sin que apuntes nada.`,
+    ok: 'Activado. Android lo comprueba en segundo plano un par de veces al día y solo avisa entre las 9:00 y las 22:00.',
+    install: 'Casi listo: para que avise con la app cerrada, instálala desde Chrome (menú ⋮ → «Instalar aplicación») y ábrela desde su icono.',
+    unsupported: 'Este navegador no puede avisar con la app cerrada. Funciona en Chrome para Android con la app instalada.',
+    blocked: 'Las notificaciones están bloqueadas para este sitio. Permítelas en los ajustes de Chrome (el permiso es común a tus apps de github.io).',
+  };
+
+  function getReg() {
+    if (!('serviceWorker' in navigator) || !location.protocol.startsWith('http')) return Promise.resolve(null);
+    return Promise.race([navigator.serviceWorker.ready, new Promise((r) => setTimeout(() => r(null), 4000))]);
+  }
+
+  async function registerPeriodic(reg) {
+    if (!reg || !('periodicSync' in reg)) return 'unsupported';
+    try {
+      const p = await navigator.permissions.query({ name: 'periodic-background-sync' });
+      if (p.state !== 'granted') return 'install';
+    } catch (e) { /* sin API de permisos: se intenta igualmente */ }
+    try {
+      await reg.periodicSync.register(R.TAG, { minInterval: 12 * 3600e3 });
+      return 'ok';
+    } catch (e) {
+      return 'install';
+    }
+  }
+
+  // Cada vez que apuntas algo: reinicia la cuenta y quita el aviso si estaba en pantalla
+  async function touchActivity() {
+    try {
+      await R.update({ lastActivity: Date.now() });
+      const reg = await getReg();
+      (await reg?.getNotifications({ tag: R.TAG }))?.forEach((n) => n.close());
+    } catch (e) { /* sin IndexedDB no hay recordatorio */ }
+  }
+
+  async function renderReminder(override) {
+    const s = await R.load();
+    $('#reminder-toggle').checked = !!s.enabled;
+    $('#reminder-test').hidden = !s.enabled;
+    let state = override || 'off';
+    if (!override && s.enabled) {
+      state = !('Notification' in window) ? 'unsupported'
+        : Notification.permission !== 'granted' ? 'blocked'
+        : await registerPeriodic(await getReg());
+    }
+    $('#reminder-status').textContent = REMINDER_MSG[state];
+  }
+
+  $('#reminder-toggle').addEventListener('change', async (ev) => {
+    if (!ev.target.checked) {
+      await R.update({ enabled: false });
+      try { await (await getReg())?.periodicSync?.unregister(R.TAG); } catch (e) { /* nada que quitar */ }
+      renderReminder();
+      return;
+    }
+    if (!('Notification' in window) || !(await getReg())) {
+      ev.target.checked = false;
+      renderReminder('unsupported');
+      return;
+    }
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') {
+      await R.update({ enabled: false });
+      renderReminder('blocked');
+      return;
+    }
+    const s = await R.load();
+    await R.update({ enabled: true, lastActivity: s.lastActivity || Date.now(), lastNotified: 0 });
+    renderReminder();
+  });
+
+  $('#reminder-test').addEventListener('click', async () => {
+    const reg = await getReg();
+    if (!reg?.active || Notification.permission !== 'granted') { renderReminder(); return; }
+    reg.active.postMessage({ type: 'mi-aventura:probar' });
+  });
 
   /* ---------- tema ---------- */
   function applyTheme() {
@@ -1028,7 +1110,7 @@
 
   $('#fab').addEventListener('click', openToday);
   $('#today-btn').addEventListener('click', () => scrollToToday(true));
-  $('#menu-btn').addEventListener('click', () => { updateBackupInfo(); $('#menu').showModal(); });
+  $('#menu-btn').addEventListener('click', () => { updateBackupInfo(); renderReminder(); $('#menu').showModal(); });
   $('#search-toggle').addEventListener('click', () => toggleSearch());
   $('#search').addEventListener('input', (ev) => {
     query = ev.target.value;
@@ -1086,6 +1168,17 @@
 
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
+    // Mensajes de nuestro service worker; los de otras apps del dominio se ignoran
+    navigator.serviceWorker.addEventListener('message', (ev) => {
+      if (ev.data?.type === 'mi-aventura:nuevo' && !editor.open) openToday();
+    });
+    // Mantener vivo el chequeo en segundo plano (p. ej. tras instalar la app)
+    R.load().then(async (s) => { if (s.enabled) registerPeriodic(await getReg()); });
+  }
+  // Abierta desde el aviso: directamente al editor de hoy
+  if (location.hash === '#nuevo') {
+    history.replaceState(null, '', location.pathname + location.search);
+    openToday();
   }
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
 })();
