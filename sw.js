@@ -5,11 +5,11 @@
  * service worker solo crea, lee y borra cachés que empiezan por PREFIX.
  * Para publicar una versión nueva basta con subir el número de VERSION.
  */
-importScripts('recordatorio.js');
+try { importScripts('recordatorio.js'); } catch (e) { /* sin recordatorio, pero la app sigue funcionando */ }
 const R = self.MiAventuraRecordatorio;
 
 const PREFIX = 'mi-aventura-';
-const VERSION = PREFIX + 'v3';
+const VERSION = PREFIX + 'v4'; // mantener igual que APP_VERSION en app.js
 const SHELL = [
   './',
   'index.html',
@@ -40,18 +40,30 @@ async function remind(test) {
   if (!test) await R.update({ lastNotified: Date.now() });
 }
 
-// Chrome (Android, app instalada) despierta al service worker un par de veces al día
+// Chrome (Android, app instalada) despierta al service worker un par de veces al día.
+// Cada visita queda anotada para poder comprobar desde el menú que de verdad ocurre.
 self.addEventListener('periodicsync', (event) => {
-  if (event.tag === R.TAG) event.waitUntil(remind(false));
+  if (!R || event.tag !== R.TAG) return;
+  event.waitUntil((async () => {
+    const s = await R.load();
+    await R.update({ lastCheck: Date.now(), checks: (s.checks || 0) + 1 });
+    await remind(false);
+  })());
 });
 
+// Botón «Probar el aviso»: responde a la página con el resultado
 self.addEventListener('message', (event) => {
-  if (event.data?.type === 'mi-aventura:probar') event.waitUntil(remind(true));
+  if (event.data?.type !== 'mi-aventura:probar') return;
+  const reply = (r) => event.source?.postMessage({ type: 'mi-aventura:probado', version: VERSION, ...r });
+  event.waitUntil(
+    (R ? remind(true) : Promise.reject(new Error('no se pudo cargar recordatorio.js')))
+      .then(() => reply({ ok: true }), (e) => reply({ ok: false, error: String(e?.message || e) }))
+  );
 });
 
 // Al tocar el aviso: abre Mi aventura (nunca otra app del mismo dominio) con el editor de hoy
 self.addEventListener('notificationclick', (event) => {
-  if (event.notification.tag !== R.TAG) return;
+  if (!R || event.notification.tag !== R.TAG) return;
   event.notification.close();
   event.waitUntil((async () => {
     const scope = self.registration.scope;
@@ -67,7 +79,13 @@ self.addEventListener('notificationclick', (event) => {
 });
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // Archivo a archivo: si alguno falta en el servidor, la versión nueva se instala igualmente
+  // (con addAll, un solo archivo ausente dejaba el móvil atascado en la versión anterior)
+  event.waitUntil(
+    caches.open(VERSION)
+      .then((c) => Promise.allSettled(SHELL.map((url) => c.add(url))))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener('activate', (event) => {

@@ -928,6 +928,7 @@
   }
 
   /* ---------- recordatorio ---------- */
+  const APP_VERSION = 'v4'; // mantener igual que VERSION en sw.js
   const R = window.MiAventuraRecordatorio;
   const REMINDER_MSG = {
     off: `Te llegará una notificación si pasan ${R.DAYS} días sin que apuntes nada.`,
@@ -1001,11 +1002,75 @@
     renderReminder();
   });
 
+  // Pide al service worker que muestre el aviso de prueba y explica qué ha pasado
+  function askWorker(reg) {
+    return new Promise((resolve) => {
+      const done = (r) => { navigator.serviceWorker.removeEventListener('message', onMsg); clearTimeout(t); resolve(r); };
+      const onMsg = (ev) => { if (ev.data?.type === 'mi-aventura:probado') done(ev.data); };
+      const t = setTimeout(() => done(null), 4000);
+      navigator.serviceWorker.addEventListener('message', onMsg);
+      reg.active.postMessage({ type: 'mi-aventura:probar' });
+    });
+  }
+
   $('#reminder-test').addEventListener('click', async () => {
+    const out = $('#reminder-status');
+    if (!('Notification' in window) || Notification.permission !== 'granted') { renderReminder(); return; }
     const reg = await getReg();
-    if (!reg?.active || Notification.permission !== 'granted') { renderReminder(); return; }
-    reg.active.postMessage({ type: 'mi-aventura:probar' });
+    if (!reg?.active) { out.textContent = 'La parte de la app que envía avisos no está activa. Cierra la app del todo y vuelve a abrirla.'; return; }
+    out.textContent = 'Enviando aviso de prueba…';
+    const r = await askWorker(reg);
+    if (r?.ok) {
+      out.textContent = 'Aviso enviado. Si no lo ves, Android lo está bloqueando: Ajustes → Aplicaciones → Mi aventura (o Chrome) → Notificaciones.';
+    } else if (r) {
+      out.textContent = `El aviso ha fallado: ${r.error}`;
+    } else {
+      // Sin respuesta: el móvil sigue con un service worker antiguo. Se fuerza la actualización
+      // y el aviso de prueba se muestra directamente desde la página.
+      reg.update().catch(() => {});
+      try {
+        await reg.showNotification('Mi aventura', { body: `Prueba: así te avisaré cuando pasen ${R.DAYS} días sin apuntar nada.`, tag: R.TAG, icon: 'icons/icon-192.png' });
+        out.textContent = 'El móvil tenía una versión antigua de la app en segundo plano (por eso no avisaba). Ya se está actualizando: cierra la app del todo y vuelve a abrirla.';
+      } catch (e) {
+        out.textContent = `El aviso ha fallado: ${e.message || e}`;
+      }
+    }
+    renderDiagnostics();
   });
+
+  // Estado detallado, para saber qué falla si el aviso no llega
+  const fmtStamp = (t) => {
+    if (!t) return 'nunca';
+    const d = new Date(t);
+    return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  async function renderDiagnostics() {
+    const box = $('#reminder-diag');
+    const s = await R.load();
+    const reg = await getReg();
+    const rows = [];
+    const perm = 'Notification' in window ? Notification.permission : 'unsupported';
+    rows.push(['Notificaciones', { granted: 'permitidas', denied: 'bloqueadas', default: 'sin decidir', unsupported: 'no disponibles' }[perm], perm === 'granted']);
+    const installed = matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: minimal-ui)').matches;
+    rows.push(['Abierta como app instalada', installed ? 'sí' : 'no, estás en el navegador', installed]);
+    let bg = ['no disponible en este navegador', false];
+    if (reg && 'periodicSync' in reg) {
+      let p = 'prompt';
+      try { p = (await navigator.permissions.query({ name: 'periodic-background-sync' })).state; } catch (e) { /* sin API */ }
+      const tags = await reg.periodicSync.getTags().catch(() => []);
+      bg = tags.includes(R.TAG) ? ['programada', true] : p === 'granted' ? ['permitida pero sin programar', false] : ['Chrome no la permite (¿app sin instalar?)', false];
+    }
+    rows.push(['Comprobación en segundo plano', ...bg]);
+    const ver = (await caches.keys().catch(() => [])).filter((k) => k.startsWith('mi-aventura-'));
+    const okVer = ver.includes('mi-aventura-' + APP_VERSION);
+    rows.push(['Versión en segundo plano', ver.length ? `${ver.join(', ').replace(/mi-aventura-/g, '')}${okVer ? '' : ` (debería ser ${APP_VERSION})`}` : 'ninguna', okVer]);
+    rows.push(['Última vez que apuntaste', fmtStamp(s.lastActivity), null]);
+    rows.push(['Última vez que Android la despertó', s.lastCheck ? `${fmtStamp(s.lastCheck)} · ${s.checks} en total` : 'nunca (desde esta versión)', s.lastCheck ? true : null]);
+    rows.push(['Último aviso enviado', fmtStamp(s.lastNotified), null]);
+    box.innerHTML = rows.map(([k, v, ok]) => `<dt>${esc(k)}</dt><dd class="${ok === true ? 'ok' : ok === false ? 'bad' : ''}">${esc(v)}</dd>`).join('');
+  }
+  $('#reminder-diag-wrap').addEventListener('toggle', (ev) => { if (ev.target.open) renderDiagnostics(); });
 
   /* ---------- tema ---------- */
   function applyTheme() {
@@ -1167,7 +1232,7 @@
   scrollToToday(false);
 
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
     // Mensajes de nuestro service worker; los de otras apps del dominio se ignoran
     navigator.serviceWorker.addEventListener('message', (ev) => {
       if (ev.data?.type === 'mi-aventura:nuevo' && !editor.open) openToday();

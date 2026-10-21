@@ -37,6 +37,7 @@ Para que llegue con la app cerrada:
 - Usa Chrome en Android e **instala la app** (menú ⋮ → «Instalar aplicación»). Chrome solo despierta en segundo plano a las apps instaladas.
 - Chrome decide cuándo hacer la comprobación (un par de veces al día), así que el aviso puede llegar unas horas más tarde. Si el móvil tiene ahorro de batería agresivo, quita la restricción a Chrome.
 - El permiso de notificaciones es común a todas tus apps de `github.io`.
+- Si no llega, abre ⋯ → «Recordatorio» → «Diagnóstico»: dice qué falla (permiso, instalación, versión antigua o que Android no ha despertado a la app).
 
 ## Copias de seguridad
 
