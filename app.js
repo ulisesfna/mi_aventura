@@ -543,19 +543,33 @@
     }
   }
 
-  /* ---------- editor ---------- */
+  /* ---------- editor ----------
+   * El editor muestra un día cada vez:
+   *  - #plan-saved: lo ya apuntado ese día. Pertenece a ese día y se queda en él.
+   *  - #plan-list:  lo que estás escribiendo. Aún no tiene día: se guarda en el que esté elegido.
+   * Al cambiar la fecha se pasa a ese otro día; los cambios hechos en los días ya visitados
+   * se conservan (en `drafts`) y se guardan todos juntos al pulsar Guardar.
+   */
   const editor = $('#editor');
+  const savedList = $('#plan-saved');
   const planList = $('#plan-list');
   const dateInput = $('#editor-date');
   const tripToggle = $('#trip-toggle');
   const tripName = $('#trip-name');
-  let editing = null;
+  let editing = null; // { day, drafts: Map(fecha → { rows, trip, tripName }) }
   let lastInput = null;
 
   function updateDateLabel() {
-    const v = dateInput.value;
-    $('#editor-date-label').textContent = v ? fmtLong(v) : 'Elige un día';
-    $('#merge-note').hidden = !(v && data.days[v] && v !== editing?.orig);
+    const k = editing.day;
+    const has = savedList.children.length > 0;
+    $('#editor-date-label').textContent = fmtLong(k);
+    $('#editor-kind').textContent = data.days[k] ? 'Editar recuerdo' : 'Nuevo recuerdo';
+    $('#saved-label').textContent = `Ya apuntado el ${fmtShort(k)}`;
+    $('#saved-label').hidden = !has;
+    $('#new-label').hidden = !has;
+    $('#editor-delete').hidden = !data.days[k];
+    $('#move-open').hidden = !has;
+    if (!has) $('#move-box').hidden = true;
   }
 
   function syncRow(row) {
@@ -564,6 +578,12 @@
   }
 
   function addPlanRow(p, after) {
+    const row = makeRow(p);
+    if (after) after.after(row); else planList.append(row);
+    return $('.plan-input', row);
+  }
+
+  function makeRow(p) {
     const row = document.createElement('div');
     row.className = 'plan-row';
     row.innerHTML = `<input class="plan-input" type="text" placeholder="¿Qué pasó? Separa planes con +" enterkeyhint="next" aria-label="Plan">
@@ -577,13 +597,12 @@
     input.value = p.t || '';
     for (const f of ['late', 'star', 'exam']) $(`.tg[data-flag="${f}"]`, row).setAttribute('aria-pressed', p[f] ? 'true' : 'false');
     syncRow(row);
-    if (after) after.after(row); else planList.append(row);
-    return input;
+    return row;
   }
 
-  function collectPlans() {
+  function collectPlans(rows) {
     const plans = [];
-    for (const row of $$('.plan-row', planList)) {
+    for (const row of rows) {
       const flags = {};
       for (const b of $$('.tg[data-flag]', row)) if (b.getAttribute('aria-pressed') === 'true') flags[b.dataset.flag] = true;
       for (const piece of $('.plan-input', row).value.split('+')) {
@@ -600,24 +619,85 @@
     $('#emoji-bar').innerHTML = list.map((e) => `<button type="button" class="emo" data-emoji="${esc(e)}">${e}</button>`).join('');
   }
 
-  function openEditor(k, opts = {}) {
+  // Guarda en borrador el estado del día que se está mostrando
+  function stashDay() {
+    editing.drafts.set(editing.day, { rows: [...savedList.children], trip: tripToggle.checked, tripName: tripName.value });
+  }
+
+  // Muestra otro día: su borrador si ya se visitó, o lo que tiene guardado
+  function loadDay(k) {
+    editing.day = k;
+    const d = editing.drafts.get(k);
     const e = data.days[k];
-    editing = { orig: e ? k : null };
-    $('#editor-kind').textContent = e ? 'Editar recuerdo' : 'Nuevo recuerdo';
-    dateInput.value = k;
-    planList.innerHTML = '';
-    (e ? e.plans : []).forEach((p) => addPlanRow(p));
-    let focus = null;
-    if (!e || opts.newPlan) focus = addPlanRow({ t: '' });
-    tripToggle.checked = !!e?.trip;
-    tripName.value = typeof e?.trip === 'string' ? e.trip : '';
+    if (d) {
+      savedList.replaceChildren(...d.rows);
+      tripToggle.checked = d.trip;
+      tripName.value = d.tripName;
+    } else {
+      savedList.replaceChildren(...(e ? e.plans : []).map(makeRow));
+      tripToggle.checked = !!e?.trip;
+      tripName.value = typeof e?.trip === 'string' ? e.trip : '';
+    }
     tripName.hidden = !tripToggle.checked;
-    $('#editor-delete').hidden = !e;
+    if (!planList.children.length) addPlanRow({ t: '' });
     updateDateLabel();
+  }
+
+  // Borrador de un día: el que ya exista o uno nuevo a partir de lo guardado
+  function draftOf(k) {
+    if (!editing.drafts.has(k)) {
+      const e = data.days[k];
+      editing.drafts.set(k, { rows: (e ? e.plans : []).map(makeRow), trip: !!e?.trip, tripName: typeof e?.trip === 'string' ? e.trip : '' });
+    }
+    return editing.drafts.get(k);
+  }
+
+  // «Mover día»: pasa todo lo apuntado (planes y viaje) del día mostrado a otro día.
+  // Se ve al momento en el editor y se confirma con Guardar, como cualquier otro cambio.
+  function moveDay(to) {
+    const from = editing.day;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(to) || to === from) return;
+    stashDay();
+    const src = editing.drafts.get(from);
+    const dst = draftOf(to);
+    dst.rows.push(...src.rows);
+    if (src.trip) { dst.trip = true; dst.tripName = dst.tripName || src.tripName; }
+    editing.drafts.set(from, { rows: [], trip: false, tripName: '' });
+    editing.moves.push([from, to]);
+    dateInput.value = to;
+    loadDay(to);
+    $('#move-box').hidden = true;
+    $('#move-done').textContent = `Movido desde el ${fmtShort(editing.moves[0][0])}. Pulsa Guardar para confirmarlo.`;
+    $('#move-done').hidden = false;
+  }
+
+  $('#move-open').addEventListener('click', () => {
+    $('#move-from').textContent = fmtShort(editing.day);
+    $('#move-date').value = editing.day;
+    $('#move-note').hidden = true;
+    $('#move-box').hidden = false;
+  });
+  $('#move-cancel').addEventListener('click', () => { $('#move-box').hidden = true; });
+  $('#move-date').addEventListener('input', () => {
+    const k = $('#move-date').value;
+    const busy = k && k !== editing.day && (editing.drafts.has(k) ? editing.drafts.get(k).rows.length : data.days[k]);
+    $('#move-note').textContent = busy ? `El ${fmtShort(k)} ya tiene planes: se juntarán con los que muevas.` : '';
+    $('#move-note').hidden = !busy;
+  });
+  $('#move-go').addEventListener('click', () => moveDay($('#move-date').value));
+
+  function openEditor(k, opts = {}) {
+    editing = { day: k, drafts: new Map(), moves: [] };
+    $('#move-box').hidden = true;
+    $('#move-done').hidden = true;
+    dateInput.value = k;
+    planList.replaceChildren();
+    loadDay(k);
     renderEmojiBar();
     editor.showModal();
-    lastInput = focus || $$('.plan-input', planList).pop();
-    if (focus && !matchMedia('(pointer: coarse)').matches) focus.focus();
+    const focusNew = !data.days[k] || opts.newPlan;
+    lastInput = focusNew ? $('.plan-input', planList) : $$('.plan-input', savedList).pop();
+    if (focusNew && !matchMedia('(pointer: coarse)').matches) lastInput.focus();
   }
 
   function propagateTripName(k, name) {
@@ -627,32 +707,44 @@
     }
   }
 
+  // Guarda cada día visitado por separado; lo nuevo va al día elegido al final
   function saveEditor() {
-    const k = dateInput.value;
-    if (!k) { dateInput.focus(); return; }
-    const plans = collectPlans();
-    const trip = tripToggle.checked ? (tripName.value.trim() || true) : null;
-    const orig = editing.orig;
-    if (!plans.length) {
-      editor.close();
-      if (orig) deleteDay(orig);
-      return;
+    if (!dateInput.value) { dateInput.focus(); return; }
+    stashDay();
+    const removed = [];
+    const before = new Map([...editing.drafts.keys()].map((k) => [k, data.days[k]]));
+    let wrote = 0;
+    for (const [k, d] of editing.drafts) {
+      let plans = collectPlans(d.rows);
+      if (k === editing.day) plans = plans.concat(collectPlans([...planList.children]));
+      const prev = data.days[k];
+      if (!plans.length) {
+        if (prev) { removed.push(k); delete data.days[k]; }
+        continue;
+      }
+      const entry = { plans };
+      const trip = d.trip ? (d.tripName.trim() || true) : null;
+      if (trip) entry.trip = trip;
+      if (JSON.stringify(entry) === JSON.stringify(prev)) continue;
+      data.days[k] = entry;
+      wrote++;
+      if (typeof trip === 'string') propagateTripName(k, trip);
     }
-    let entry = { plans };
-    if (trip) entry.trip = trip;
-    if (orig && orig !== k) delete data.days[orig];
-    if (data.days[k] && orig !== k) {
-      const ex = data.days[k];
-      entry = { plans: [...ex.plans, ...plans] };
-      if (trip || ex.trip) entry.trip = trip || ex.trip;
-    }
-    data.days[k] = entry;
-    if (typeof trip === 'string') propagateTripName(k, trip);
-    save();
-    touchActivity();
     editor.close();
-    revealDay(k);
-    toast(orig ? 'Cambios guardados' : 'Recuerdo guardado');
+    if (!wrote && !removed.length) return;
+    save();
+    if (wrote) touchActivity();
+    revealDay(editing.day);
+    // Deshacer devuelve todos los días tocados a como estaban
+    const undo = () => {
+      for (const [k, e] of before) { if (e) data.days[k] = e; else delete data.days[k]; }
+      save();
+      revealDay(editing.moves[0]?.[0] || removed[0] || editing.day);
+    };
+    const moved = editing.moves.length && !data.days[editing.moves[0][0]];
+    if (moved) toast(`Día movido al ${fmtShort(editing.day)}`, 'Deshacer', undo);
+    else if (removed.length) toast(removed.length === 1 ? `Vaciado el ${fmtShort(removed[0])}` : `Vaciados ${removed.length} días`, 'Deshacer', undo);
+    else toast('Guardado');
   }
 
   function deleteDay(k) {
@@ -664,38 +756,43 @@
     toast(`Eliminado el ${fmtShort(k)}`, 'Deshacer', () => { data.days[k] = prev; save(); revealDay(k); });
   }
 
-  planList.addEventListener('click', (ev) => {
-    const tg = ev.target.closest('.tg');
-    if (!tg) return;
-    const row = tg.closest('.plan-row');
-    if (tg.classList.contains('tg-del')) {
-      const prev = row.previousElementSibling || row.nextElementSibling;
-      row.remove();
-      if (!$('.plan-row', planList)) addPlanRow({ t: '' }).focus();
-      else if (prev) lastInput = $('.plan-input', prev);
-      return;
-    }
-    tg.setAttribute('aria-pressed', tg.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
-    syncRow(row);
-  });
-  planList.addEventListener('focusin', (ev) => { if (ev.target.classList.contains('plan-input')) lastInput = ev.target; });
-  planList.addEventListener('keydown', (ev) => {
-    const input = ev.target;
-    if (!input.classList.contains('plan-input')) return;
-    if (ev.key === 'Enter' && !ev.isComposing) {
-      ev.preventDefault();
-      if (ev.ctrlKey || ev.metaKey) { saveEditor(); return; }
-      addPlanRow({ t: '' }, input.closest('.plan-row')).focus();
-    } else if (ev.key === 'Backspace' && !input.value && $$('.plan-row', planList).length > 1) {
-      ev.preventDefault();
-      const row = input.closest('.plan-row');
-      const prev = row.previousElementSibling || row.nextElementSibling;
-      row.remove();
-      const pi = $('.plan-input', prev);
-      pi.focus();
-      pi.setSelectionRange(pi.value.length, pi.value.length);
-    }
-  });
+  // Quita una fila solo del día en el que está y deja siempre un hueco para escribir
+  function removeRow(row) {
+    const all = $$('.plan-row', editor);
+    const near = all[all.indexOf(row) - 1] || all[all.indexOf(row) + 1];
+    row.remove();
+    if (!planList.children.length) addPlanRow({ t: '' });
+    updateDateLabel();
+    return near?.isConnected ? $('.plan-input', near) : $('.plan-input', planList);
+  }
+
+  for (const list of [savedList, planList]) {
+    list.addEventListener('click', (ev) => {
+      const tg = ev.target.closest('.tg');
+      if (!tg) return;
+      const row = tg.closest('.plan-row');
+      if (tg.classList.contains('tg-del')) { lastInput = removeRow(row); return; }
+      tg.setAttribute('aria-pressed', tg.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+      syncRow(row);
+    });
+    list.addEventListener('focusin', (ev) => { if (ev.target.classList.contains('plan-input')) lastInput = ev.target; });
+    list.addEventListener('keydown', (ev) => {
+      const input = ev.target;
+      if (!input.classList.contains('plan-input')) return;
+      if (ev.key === 'Enter' && !ev.isComposing) {
+        ev.preventDefault();
+        if (ev.ctrlKey || ev.metaKey) { saveEditor(); return; }
+        const row = makeRow({ t: '' });
+        input.closest('.plan-row').after(row);
+        $('.plan-input', row).focus();
+      } else if (ev.key === 'Backspace' && !input.value && $$('.plan-row', editor).length > 1) {
+        ev.preventDefault();
+        const pi = removeRow(input.closest('.plan-row'));
+        pi.focus();
+        pi.setSelectionRange(pi.value.length, pi.value.length);
+      }
+    });
+  }
   $('#add-plan').addEventListener('click', () => {
     addPlanRow({ t: '' }).focus();
   });
@@ -711,7 +808,13 @@
     input.focus();
     input.setSelectionRange(pos, pos);
   });
-  dateInput.addEventListener('change', updateDateLabel);
+  // Cambiar la fecha = pasar a ese día (no mover lo apuntado en el día anterior)
+  dateInput.addEventListener('change', () => {
+    const k = dateInput.value;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(k) || k === editing.day) return;
+    stashDay();
+    loadDay(k);
+  });
   tripToggle.addEventListener('change', () => {
     tripName.hidden = !tripToggle.checked;
     if (tripToggle.checked && !tripName.value) {
@@ -721,9 +824,9 @@
   });
   $('#editor-form').addEventListener('submit', (ev) => { ev.preventDefault(); saveEditor(); });
   $('#editor-delete').addEventListener('click', () => {
-    const k = editing.orig;
+    const k = editing.day;
     editor.close();
-    if (k) deleteDay(k);
+    deleteDay(k);
   });
 
   /* ---------- toast ---------- */
@@ -928,7 +1031,7 @@
   }
 
   /* ---------- recordatorio ---------- */
-  const APP_VERSION = 'v4'; // mantener igual que VERSION en sw.js
+  const APP_VERSION = 'v6'; // mantener igual que VERSION en sw.js
   const R = window.MiAventuraRecordatorio;
   const REMINDER_MSG = {
     off: `Te llegará una notificación si pasan ${R.DAYS} días sin que apuntes nada.`,

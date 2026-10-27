@@ -98,11 +98,29 @@
       <div class="sheet-head">
         <div>
           <p class="eyebrow" id="editor-kind">Nuevo recuerdo</p>
-          <label class="date-pick"><span id="editor-date-label"></span><input type="date" id="editor-date" required></label>
+          <div class="date-pick">
+            <span id="editor-date-label"></span>
+            <div class="date-row">
+              <input type="date" id="editor-date" required aria-label="Día">
+              <button type="button" class="link-btn" id="move-open" hidden>Mover día…</button>
+            </div>
+          </div>
         </div>
         <button type="button" class="icon-btn" data-close aria-label="Cerrar"><svg><use href="#i-close"/></svg></button>
       </div>
-      <p class="merge-note" id="merge-note" hidden>Ese día ya tiene recuerdos: los planes se juntarán.</p>
+      <div class="move-box" id="move-box" hidden>
+        <label for="move-date">Mover todo lo apuntado el <span id="move-from"></span> al día:</label>
+        <div class="move-row">
+          <input type="date" id="move-date">
+          <button type="button" class="btn btn-primary" id="move-go">Mover</button>
+          <button type="button" class="btn btn-ghost" id="move-cancel">Cancelar</button>
+        </div>
+        <p class="move-note" id="move-note" hidden></p>
+      </div>
+      <p class="move-done" id="move-done" hidden></p>
+      <p class="plan-label" id="saved-label" hidden></p>
+      <div id="plan-saved" class="plan-list"></div>
+      <p class="plan-label" id="new-label" hidden>Añadir</p>
       <div id="plan-list" class="plan-list"></div>
       <button type="button" class="add-plan" id="add-plan"><svg><use href="#i-plus"/></svg>Añadir plan</button>
       <div class="trip-box">
@@ -111,7 +129,7 @@
       </div>
       <div class="emoji-bar" id="emoji-bar" aria-label="Tus emojis más usados"></div>
       <div class="sheet-foot">
-        <button type="button" class="btn btn-ghost danger" id="editor-delete"><svg><use href="#i-trash"/></svg>Eliminar</button>
+        <button type="button" class="btn btn-ghost danger" id="editor-delete"><svg><use href="#i-trash"/></svg>Eliminar día</button>
         <span class="spacer"></span>
         <button type="button" class="btn btn-ghost" data-close>Cancelar</button>
         <button type="submit" class="btn btn-primary" id="editor-save">Guardar</button>
