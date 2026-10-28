@@ -1,293 +1,332 @@
-/* Mi aventura · importador
- * Convierte notas con el formato «7 Febrero - Plan🎉 + Otro plan🍻» en días.
- * Fuentes: .docx (con formato), HTML pegado (con formato) o texto plano.
- * Formato → significado:
- *   negrita   → plan hasta tarde (pasadas las 00:00)
- *   cursiva   → examen, o viaje si son varios días seguidos enteros en cursiva con emojis
- *   resaltado → plan destacado
- */
-(function () {
-  'use strict';
+// Importar horarios (Chronos UB u otro .ics): cada asignatura pasa a ser una
+// subcategoría con su propio color, dentro de un grupo con nombre propio.
+import * as store from '../store.js';
+import { parseICS, buildItemsFromEvents, guessSubject, guessActivity, DEFAULT_ACTIVITY_SHADE } from '../ics.js';
+import { NAMED_PALETTES } from '../palette.js';
+import { openModal, toast, ctx } from './dom.js';
+import { openColorPicker } from './colorpicker.js';
+import { esc, norm, readFileText, shade, uid } from '../util.js';
 
-  const MONTHS = {
-    enero: 1, ene: 1, gener: 1, gen: 1,
-    febrero: 2, feb: 2, febrer: 2,
-    marzo: 3, mar: 3, marc: 3,
-    abril: 4, abr: 4,
-    mayo: 5, may: 5, maig: 5,
-    junio: 6, jun: 6, juny: 6,
-    julio: 7, jul: 7, juliol: 7,
-    agosto: 8, ago: 8, agost: 8,
-    septiembre: 9, setiembre: 9, sep: 9, sept: 9, set: 9, setembre: 9,
-    octubre: 10, oct: 10,
-    noviembre: 11, nov: 11, novembre: 11,
-    diciembre: 12, dic: 12, desembre: 12, des: 12,
+const SHADE_OPTIONS = [[0.5, 'Mucho más claro'], [0.3, 'Más claro'], [0, 'Color de la asignatura'], [-0.3, 'Más oscuro'], [-0.5, 'Mucho más oscuro']];
+
+const CHRONOS = 'https://grad.ub.edu/chronos/pages/horaris/index2.xhtml';
+
+const REM_PRESETS = {
+  none: [],
+  v10: [{ value: 10, unit: 'min', level: 'vibrate' }],
+  s15: [{ value: 15, unit: 'min', level: 'sound' }],
+  s30: [{ value: 30, unit: 'min', level: 'sound' }],
+  a30: [{ value: 30, unit: 'min', level: 'alarm' }],
+};
+
+export function openImporter() {
+  let events = null;
+  let subjects = [];
+  let paletteName = 'Vivo';
+  const year = new Date().getMonth() >= 6 ? new Date().getFullYear() : new Date().getFullYear() - 1;
+  const opts = {
+    groupName: `Horario UB ${year}-${String(year + 1).slice(2)}`,
+    merge: true, titleMode: 'clean', inAgenda: true, rem: 'v10', skipHolidays: true, replace: true,
+    useShades: true, shades: {}, // tipo de actividad → tono
   };
+  let activities = [];
 
-  const DATE_RE = /^\s*(\d{1,2})\s*(?:de\s+)?([A-Za-zÀ-ÿ]+)\.?\s*(?:[-–—:]\s*|$)/;
-  const CONTENT_RE = /[\p{L}\p{N}\p{Extended_Pictographic}]/u;
-  const WORD_RE = /[\p{L}\p{N}]/u;
-  const EMOJI_RE = /\p{Extended_Pictographic}|\p{Regional_Indicator}/u;
-
-  const norm = (s) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
-  const pad = (n) => String(n).padStart(2, '0');
-
-  /* ---------- ZIP mínimo para leer word/document.xml ---------- */
-  async function unzipEntry(buf, wanted) {
-    const dv = new DataView(buf);
-    const u8 = new Uint8Array(buf);
-    let eocd = -1;
-    for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) {
-      if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
-    }
-    if (eocd < 0) throw new Error('El archivo no parece un .docx válido.');
-    const count = dv.getUint16(eocd + 10, true);
-    let off = dv.getUint32(eocd + 16, true);
-    const dec = new TextDecoder();
-    for (let n = 0; n < count; n++) {
-      if (dv.getUint32(off, true) !== 0x02014b50) break;
-      const method = dv.getUint16(off + 10, true);
-      const csize = dv.getUint32(off + 20, true);
-      const nameLen = dv.getUint16(off + 28, true);
-      const extraLen = dv.getUint16(off + 30, true);
-      const commentLen = dv.getUint16(off + 32, true);
-      const local = dv.getUint32(off + 42, true);
-      const name = dec.decode(u8.subarray(off + 46, off + 46 + nameLen));
-      if (name === wanted) {
-        const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
-        const data = u8.subarray(start, start + csize);
-        if (method === 0) return dec.decode(data);
-        if (method === 8) {
-          if (typeof DecompressionStream === 'undefined') throw new Error('Este navegador no puede abrir .docx. Prueba con Chrome, Edge, Safari o Firefox actualizados.');
-          const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-          return await new Response(stream).text();
-        }
-        throw new Error('Compresión no soportada en el .docx.');
-      }
-      off += 46 + nameLen + extraLen + commentLen;
-    }
-    throw new Error('No se encontró el texto dentro del .docx.');
-  }
-
-  /* ---------- Fuentes → párrafos de segmentos {t, b, i, h} ---------- */
-  async function docxToParagraphs(buf) {
-    const xml = await unzipEntry(buf, 'word/document.xml');
-    const doc = new DOMParser().parseFromString(xml, 'application/xml');
-    const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
-    const child = (el, name) => {
-      for (const c of el.children) if (c.localName === name) return c;
-      return null;
-    };
-    const on = (rPr, name) => {
-      const e = rPr && child(rPr, name);
-      if (!e) return false;
-      const v = e.getAttributeNS(W, 'val') ?? e.getAttribute('w:val');
-      return v == null || !['0', 'false', 'none', 'off'].includes(v);
-    };
-    const shaded = (rPr) => {
-      const e = rPr && child(rPr, 'shd');
-      if (!e) return false;
-      const fill = (e.getAttributeNS(W, 'fill') ?? e.getAttribute('w:fill') ?? '').toLowerCase();
-      return fill && fill !== 'auto' && fill !== 'ffffff';
-    };
-    const paras = [];
-    for (const p of doc.getElementsByTagNameNS(W, 'p')) {
-      const segs = [];
-      for (const r of p.getElementsByTagNameNS(W, 'r')) {
-        const rPr = child(r, 'rPr');
-        let t = '';
-        for (const c of r.children) {
-          if (c.localName === 't') t += c.textContent;
-          else if (c.localName === 'tab') t += ' ';
-        }
-        if (t) segs.push({ t, b: on(rPr, 'b'), i: on(rPr, 'i'), h: on(rPr, 'highlight') || shaded(rPr) });
-      }
-      paras.push(segs);
-    }
-    return paras;
-  }
-
-  const BLOCK = /^(P|DIV|LI|H[1-6]|TR|BLOCKQUOTE|UL|OL|TABLE|SECTION|ARTICLE|PRE)$/;
-  const NO_BG = /^(|transparent|initial|inherit|none|white|#fff|#ffffff|rgba\(\s*0,\s*0,\s*0,\s*0\s*\)|rgb\(\s*255,\s*255,\s*255\s*\))$/i;
-
-  function htmlToParagraphs(html) {
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    const paras = [];
-    let cur = [];
-    const flush = () => { paras.push(cur); cur = []; };
-    const walk = (node, f) => {
-      if (node.nodeType === 3) {
-        const t = node.nodeValue.replace(/[\r\n]+/g, ' ');
-        if (t) cur.push({ t, b: f.b, i: f.i, h: f.h });
-        return;
-      }
-      if (node.nodeType !== 1) return;
-      const tag = node.tagName;
-      if (tag === 'BR') { flush(); return; }
-      if (/^(STYLE|SCRIPT|HEAD|META|TITLE)$/.test(tag)) return;
-      const g = { ...f };
-      if (tag === 'B' || tag === 'STRONG') g.b = true;
-      if (tag === 'I' || tag === 'EM') g.i = true;
-      if (tag === 'MARK') g.h = true;
-      const st = node.style;
-      if (st) {
-        const fw = st.fontWeight;
-        if (fw === 'bold' || fw === 'bolder' || +fw >= 600) g.b = true;
-        else if (fw === 'normal' || (+fw && +fw < 600)) g.b = false;
-        if (st.fontStyle === 'italic' || st.fontStyle === 'oblique') g.i = true;
-        else if (st.fontStyle === 'normal') g.i = false;
-        const bg = (st.backgroundColor || '').trim();
-        if (bg && !NO_BG.test(bg)) g.h = true;
-      }
-      const block = BLOCK.test(tag);
-      if (block && cur.length) flush();
-      for (const c of node.childNodes) walk(c, g);
-      if (block) flush();
-    };
-    walk(doc.body, { b: false, i: false, h: false });
-    flush();
-    return paras.filter((p) => p.length);
-  }
-
-  // Texto plano. Entiende las marcas de «Ver como texto»: *noche*, _examen_, ==destacado==
-  function textToParagraphs(text) {
-    return text.split(/\r?\n/).map((line) => {
-      const segs = [];
-      const f = { b: false, i: false, h: false };
-      let buf = '';
-      const flush = () => { if (buf) segs.push({ t: buf, ...f }); buf = ''; };
-      for (let k = 0; k < line.length; k++) {
-        if (line.startsWith('==', k)) { flush(); f.h = !f.h; k++; }
-        else if (line[k] === '*') { flush(); f.b = !f.b; }
-        else if (line[k] === '_') { flush(); f.i = !f.i; }
-        else buf += line[k];
-      }
-      flush();
-      return segs.length ? segs : [{ t: '', b: false, i: false, h: false }];
-    });
-  }
-
-  const TRIP_TAG = /\s*\[viaje(?::\s*([^\]]*))?\]\s*$/i;
-
-  /* ---------- Párrafos → días ---------- */
-  function analyse(paragraphs, fallbackYear) {
-    let year = fallbackYear;
-    const found = [];
-    const skipped = [];
-    for (const segs of paragraphs) {
-      const text = segs.map((s) => s.t).join('');
-      const trimmed = text.trim();
-      if (!trimmed) continue;
-      const ym = trimmed.match(/^(?:año\s+)?(\d{4})[:.]?$/i);
-      if (ym) { year = +ym[1]; continue; }
-      const m = text.match(DATE_RE);
-      const month = m && MONTHS[norm(m[2])];
-      if (!m || !month) { skipped.push(trimmed); continue; }
-      const day = +m[1];
-      const probe = new Date(year, month - 1, day);
-      if (probe.getMonth() !== month - 1) { skipped.push(trimmed); continue; }
-
-      // Formato carácter a carácter
-      const chars = [];
-      for (const s of segs) for (const ch of s.t) chars.push({ ch, b: s.b, i: s.i, h: s.h });
-      const prefixLen = [...m[0]].length;
-      const prefix = chars.slice(0, prefixLen);
-      let body = chars.slice(prefixLen);
-      let bodyText = body.map((c) => c.ch).join('');
-      let tripTag = null;
-      const tm = bodyText.match(TRIP_TAG);
-      if (tm) {
-        tripTag = (tm[1] || '').trim() || true;
-        body = body.slice(0, [...bodyText.slice(0, tm.index)].length);
-        bodyText = bodyText.slice(0, tm.index);
-      }
-      if (!CONTENT_RE.test(bodyText)) continue; // día vacío o «/»
-
-      const dateItalic = prefix.some((c) => c.i && WORD_RE.test(c.ch));
-      const plans = [];
-      let cur = [];
-      const pushPlan = () => {
-        const t = cur.map((c) => c.ch).join('').trim();
-        if (CONTENT_RE.test(t)) {
-          const solid = cur.filter((c) => c.ch.trim() && c.ch !== '+');
-          const words = solid.filter((c) => WORD_RE.test(c.ch));
-          plans.push({
-            t,
-            late: solid.some((c) => c.b),
-            star: solid.some((c) => c.h),
-            ital: words.some((c) => c.i),
-            hasWords: words.length > 0,
-          });
-        }
-        cur = [];
+  openModal({
+    title: 'Importar horario',
+    wide: true,
+    build(body, close) {
+      const step1 = () => {
+        body.innerHTML = `<div class="import">
+          <ol class="howto">
+            <li>Abre <a href="${CHRONOS}" target="_blank" rel="noopener">Chronos (UB)</a>, elige tus asignaturas y grupos.</li>
+            <li>En «Visualitza la teva agenda» pulsa <b>Exporta-la</b> y descarga el archivo <code>.ics</code>.</li>
+            <li>Arrástralo aquí (sirve cualquier .ics: Google Calendar, Outlook…).</li>
+          </ol>
+          <label class="drop" tabindex="0">
+            <input type="file" accept=".ics,text/calendar" hidden>
+            <span class="drop-icon">📥</span><b>Suelta el archivo .ics aquí</b><span class="muted">o pulsa para elegirlo</span>
+          </label>
+          <details><summary>…o pega el contenido del .ics</summary>
+            <textarea class="input mono" rows="6" placeholder="BEGIN:VCALENDAR…"></textarea>
+            <button class="btn" data-act="paste">Leer texto</button>
+          </details>
+        </div>`;
+        const drop = body.querySelector('.drop');
+        const input = drop.querySelector('input');
+        input.onchange = () => input.files[0] && readFileText(input.files[0]).then(load);
+        drop.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          drop.classList.add('over');
+        });
+        drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+        drop.addEventListener('drop', (e) => {
+          e.preventDefault();
+          drop.classList.remove('over');
+          const f = e.dataTransfer.files[0];
+          if (f) readFileText(f).then(load);
+        });
+        body.querySelector('[data-act=paste]').onclick = () => load(body.querySelector('textarea').value);
       };
-      for (const c of body) {
-        if (c.ch === '+') pushPlan();
-        else cur.push(c);
-      }
-      pushPlan();
-      if (!plans.length) continue;
 
-      found.push({
-        date: `${year}-${pad(month)}-${pad(day)}`,
-        plans,
-        dateItalic,
-        allItalic: dateItalic || plans.every((p) => !p.hasWords || p.ital),
-        hasEmoji: EMOJI_RE.test(bodyText),
-        tripTag,
+      const load = (text) => {
+        try {
+          events = parseICS(text);
+        } catch (e) {
+          console.error(e);
+          events = [];
+        }
+        if (!events.length) {
+          toast('No he encontrado eventos en ese archivo');
+          return;
+        }
+        const map = new Map();
+        for (const ev of events) {
+          const name = guessSubject(ev.summary);
+          const k = norm(name);
+          if (!map.has(k)) map.set(k, { key: k, name, count: 0, activities: new Set(), include: true, color: null, samples: new Set() });
+          const s = map.get(k);
+          s.count++;
+          const a = guessActivity(ev.summary);
+          if (a) s.activities.add(a);
+          s.samples.add(ev.summary);
+        }
+        subjects = [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+        const actCount = new Map();
+        events.forEach((ev) => {
+          const a = guessActivity(ev.summary);
+          actCount.set(a, (actCount.get(a) ?? 0) + 1);
+        });
+        activities = [...actCount.entries()].filter(([a]) => a).sort((x, y) => y[1] - x[1]);
+        activities.forEach(([a]) => (opts.shades[a] ??= DEFAULT_ACTIVITY_SHADE[a] ?? 0.3));
+        applyPalette();
+        step2();
+      };
+
+      const applyPalette = () => {
+        const pal = NAMED_PALETTES[paletteName];
+        subjects.forEach((s, i) => (s.color = pal[i % pal.length]));
+      };
+
+      const step2 = () => {
+        const existing = store.get().categories.find((c) => !c.parentId && norm(c.name) === norm(opts.groupName));
+        const first = events.reduce((a, e) => (e.start < a ? e.start : a), events[0].start);
+        const last = events.reduce((a, e) => (e.start > a ? e.start : a), events[0].start);
+        body.innerHTML = `<div class="import">
+          <p><b>${events.length}</b> sesiones · <b>${subjects.length}</b> asignaturas · del ${first.toLocaleDateString()} al ${last.toLocaleDateString()}</p>
+          <div class="row wrap">
+            <label class="field grow">Nombre del horario (grupo de categorías)<input class="input" name="groupName" value="${esc(opts.groupName)}"></label>
+            <label class="field">Paleta de colores<select class="input" name="palette">${Object.keys(NAMED_PALETTES).map((n) => `<option ${n === paletteName ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+          </div>
+          <div class="pal-preview">${NAMED_PALETTES[paletteName].map((c) => `<span style="background:${c}"></span>`).join('')}</div>
+          <table class="subj">
+            <thead><tr><th></th><th>Color</th><th>Categoría (puedes renombrar o unir poniendo el mismo nombre)</th><th>Sesiones</th></tr></thead>
+            <tbody>${subjects.map((s, i) => `<tr data-i="${i}" class="${s.include ? '' : 'off'}">
+              <td><input type="checkbox" data-inc ${s.include ? 'checked' : ''} title="Importar"></td>
+              <td><button class="color-btn" data-col style="--c:${s.color}"></button></td>
+              <td><input class="input" data-name value="${esc(s.name)}"><div class="muted small" title="${esc([...s.samples].join('\n'))}">${esc([...s.samples][0])}${s.samples.size > 1 ? ` (+${s.samples.size - 1} variantes)` : ''}</div></td>
+              <td>${s.count}${s.activities.size ? `<div class="act-swatches">${[...s.activities].map((a) => `<span class="act-sw" style="--c:${opts.useShades ? shade(s.color, opts.shades[a] ?? 0) : s.color}" title="${esc(a)}">${esc(a)}</span>`).join('')}</div>` : ''}</td>
+            </tr>`).join('')}</tbody>
+          </table>
+          ${activities.length > 1 ? `<fieldset class="box"><legend>Tipos de clase</legend>
+            <label class="check"><input type="checkbox" name="useShades" ${opts.useShades ? 'checked' : ''}> Distinguir cada tipo con un tono de la misma asignatura</label>
+            ${opts.useShades ? `<div class="shade-rows">${activities.map(([a, n]) => `<div class="row center wrap">
+              <span class="act-sw" style="--c:${shade(subjects[0].color, opts.shades[a])}">${esc(a)}</span><span class="muted small">${n} sesiones</span>
+              <select class="input" data-shade="${esc(a)}">${SHADE_OPTIONS.map(([v, l]) => `<option value="${v}" ${opts.shades[a] === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+            </div>`).join('')}</div>` : ''}
+          </fieldset>` : ''}
+          <fieldset class="box"><legend>Opciones</legend>
+            <label class="check"><input type="checkbox" name="merge" ${opts.merge ? 'checked' : ''}> Unir las sesiones semanales en eventos que se repiten (así se mueven en bloque)</label>
+            <label class="check"><input type="checkbox" name="inAgenda" ${opts.inAgenda ? 'checked' : ''}> Mostrar en la agenda</label>
+            <label class="check"><input type="checkbox" name="skipHolidays" ${opts.skipHolidays ? 'checked' : ''}> Respetar periodos festivos / sin clases de Ajustes</label>
+            <div class="row wrap">
+              <label class="field">Título de cada clase
+                <select class="input" name="titleMode">
+                  <option value="clean" ${opts.titleMode === 'clean' ? 'selected' : ''}>Asignatura · tipo (p. ej. «Física · Prácticas»)</option>
+                  <option value="orig" ${opts.titleMode === 'orig' ? 'selected' : ''}>Título original del archivo</option>
+                </select></label>
+              <label class="field">Aviso por defecto
+                <select class="input" name="rem">
+                  <option value="none" ${opts.rem === 'none' ? 'selected' : ''}>Sin aviso</option>
+                  <option value="v10" ${opts.rem === 'v10' ? 'selected' : ''}>📳 10 min antes, vibración</option>
+                  <option value="s15" ${opts.rem === 's15' ? 'selected' : ''}>🔔 15 min antes, sonido</option>
+                  <option value="s30" ${opts.rem === 's30' ? 'selected' : ''}>🔔 30 min antes, sonido</option>
+                  <option value="a30" ${opts.rem === 'a30' ? 'selected' : ''}>⏰ 30 min antes, alarma</option>
+                </select></label>
+            </div>
+            ${existing ? `<label class="check"><input type="checkbox" name="replace" ${opts.replace ? 'checked' : ''}> Ya existe «${esc(existing.name)}»: reemplazar las clases importadas antes</label>` : ''}
+          </fieldset>
+          <div class="modal-actions"><button class="btn" data-act="back">← Otro archivo</button><span class="grow"></span>
+            <button class="btn" data-close>Cancelar</button><button class="btn primary" data-act="import">Importar ${subjects.filter((s) => s.include).length} asignaturas</button></div>
+        </div>`;
+      };
+
+      body.addEventListener('change', (e) => {
+        const t = e.target;
+        if (t.dataset.shade != null) {
+          opts.shades[t.dataset.shade] = +t.value;
+          return step2();
+        }
+        if (t.name === 'useShades') {
+          opts.useShades = t.checked;
+          return step2();
+        }
+        const row = t.closest('[data-i]');
+        if (row) {
+          const s = subjects[+row.dataset.i];
+          if (t.matches('[data-inc]')) {
+            s.include = t.checked;
+            step2();
+          }
+          if (t.matches('[data-name]')) s.name = t.value.trim() || s.name;
+          return;
+        }
+        if (t.name === 'palette') {
+          paletteName = t.value;
+          applyPalette();
+          step2();
+        } else if (t.name === 'groupName') {
+          opts.groupName = t.value.trim() || opts.groupName;
+          step2();
+        } else if (t.name in opts) opts[t.name] = t.type === 'checkbox' ? t.checked : t.value;
       });
-    }
 
-    // Juntar líneas repetidas del mismo día
-    const byDate = new Map();
-    for (const f of found) {
-      const prev = byDate.get(f.date);
-      if (prev) {
-        prev.plans.push(...f.plans);
-        prev.dateItalic ||= f.dateItalic;
-        prev.allItalic &&= f.allItalic;
-        prev.hasEmoji ||= f.hasEmoji;
-        prev.tripTag ||= f.tripTag;
-      } else byDate.set(f.date, f);
-    }
-    const list = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+      body.addEventListener('click', (e) => {
+        const t = e.target;
+        const col = t.closest('[data-col]');
+        if (col) {
+          const s = subjects[+col.closest('[data-i]').dataset.i];
+          openColorPicker(col, s.color, (c) => {
+            s.color = c;
+            step2();
+          });
+          return;
+        }
+        const act = t.closest('[data-act]')?.dataset.act;
+        if (act === 'back') step1();
+        if (act === 'import') {
+          const n = doImport(events, subjects, opts);
+          close();
+          const first = events.reduce((a, ev) => (ev.start < a ? ev.start : a), events[0].start);
+          ctx.cursor = first > new Date() ? first : new Date();
+          ctx.setView('week');
+          toast(`Importadas ${n} clases`, { action: ctx.undo });
+        }
+      });
 
-    // Viajes: tramos de días seguidos en cursiva entera con emojis
-    const dayNum = (iso) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) / 864e5;
-    let i = 0;
-    while (i < list.length) {
-      if (!list[i].allItalic) { i++; continue; }
-      let j = i;
-      while (j + 1 < list.length && list[j + 1].allItalic && dayNum(list[j + 1].date) - dayNum(list[j].date) === 1) j++;
-      const run = list.slice(i, j + 1);
-      const emojiDays = run.filter((d) => d.hasEmoji).length;
-      const isTrip = run.some((d) => d.dateItalic) || (run.length >= 2 && emojiDays * 2 >= run.length);
-      if (isTrip) run.forEach((d) => { d.trip = true; });
-      i = j + 1;
-    }
-    for (const d of list) if (d.tripTag) d.trip = d.tripTag;
+      step1();
+    },
+  });
+}
 
-    const days = {};
-    for (const d of list) {
-      const entry = {
-        plans: d.plans.map((p) => {
-          const plan = { t: p.t };
-          if (p.late) plan.late = true;
-          if (p.star) plan.star = true;
-          if (p.ital && !d.trip) plan.exam = true;
-          return plan;
-        }),
-      };
-      if (d.trip) entry.trip = d.trip;
-      days[d.date] = entry;
-    }
-    return { days, skipped };
-  }
+/**
+ * Marca como examen los elementos importados que lo son (título «· Examen» o código EXAM en el
+ * original), para que usen los avisos de examen. Solo toca los que aún no estaban marcados.
+ * Devuelve cuántos ha marcado.
+ */
+export function markExams() {
+  const isExam = (i) => i.exam === undefined && i.type === 'event' &&
+    (guessActivity((i.notes || '').split('\n')[0]) === 'Examen' || / · (Examen|Evaluación)$/.test(i.title));
+  const found = store.get().items.filter(isExam);
+  if (found.length) store.quiet(() => found.forEach((i) => (i.exam = true)), true);
+  return found.length;
+}
 
-  window.Importer = {
-    docxToParagraphs,
-    htmlToParagraphs,
-    textToParagraphs,
-    analyse,
-  };
-})();
+/** Subcategorías de un grupo que son la misma asignatura con otro tipo/grupo (TEORIA M1, PROB M1A…) */
+export function duplicateSubjects(groupId) {
+  const kids = store.childrenOf(groupId);
+  const keys = kids.map((c) => norm(guessSubject(c.name)));
+  return kids.filter((c, i) => keys.indexOf(keys[i]) !== i || norm(c.name) !== keys[i]).length;
+}
+
+/**
+ * Une en una sola subcategoría por asignatura las que solo se diferencian por el tipo
+ * de clase o el grupo. Los elementos pasan a la asignatura con un tono según su tipo.
+ */
+export function unifySubjects(groupId) {
+  let merged = 0;
+  store.mutate('Unir asignaturas', (st) => {
+    const bySubj = new Map();
+    for (const c of st.categories.filter((x) => x.parentId === groupId)) {
+      const subj = guessSubject(c.name);
+      const k = norm(subj);
+      if (!bySubj.has(k)) bySubj.set(k, { subj, cats: [] });
+      bySubj.get(k).cats.push(c);
+    }
+    for (const { subj, cats } of bySubj.values()) {
+      const keep = cats.find((c) => norm(c.name) === norm(subj)) ?? cats.find((c) => guessActivity(c.name) === 'Teoría') ?? cats[0];
+      for (const c of cats) {
+        const catAct = guessActivity(c.name);
+        for (const it of st.items.filter((i) => i.categoryId === c.id)) {
+          const original = (it.notes || '').split('\n')[0];
+          const act = guessActivity(original) || catAct;
+          it.categoryId = keep.id;
+          if (!it.shade) it.shade = DEFAULT_ACTIVITY_SHADE[act] ?? 0;
+          if (act === 'Examen') it.exam = true;
+          // Títulos generados al importar («Asignatura TEORIA M1 · Teoría») → «Asignatura · Teoría»
+          if (it.title.startsWith(c.name)) it.title = `${subj}${act ? ' · ' + act : ''}`;
+        }
+        if (c !== keep) {
+          st.categories.forEach((x) => x.parentId === c.id && (x.parentId = keep.id));
+          st.categories = st.categories.filter((x) => x.id !== c.id);
+          merged++;
+        }
+      }
+      keep.name = subj;
+    }
+  });
+  return merged;
+}
+
+function doImport(events, subjects, opts) {
+  const bySubject = new Map(subjects.map((s) => [s.key, s]));
+  const included = (ev) => bySubject.get(norm(guessSubject(ev.summary)))?.include;
+  const evs = events.filter(included);
+  const built = buildItemsFromEvents(evs, { merge: opts.merge });
+  let count = 0;
+  store.mutate('Importar horario', (st) => {
+    let group = st.categories.find((c) => !c.parentId && norm(c.name) === norm(opts.groupName));
+    if (group && opts.replace) {
+      st.items = st.items.filter((i) => i.source !== `import:${group.id}`);
+      // Quitar las subcategorías que se han quedado vacías (p. ej. las de una importación antigua)
+      const used = new Set(st.items.map((i) => i.categoryId));
+      const gid = group.id;
+      st.categories = st.categories.filter((c) => c.parentId !== gid || used.has(c.id) || st.categories.some((x) => x.parentId === c.id));
+    }
+    if (!group) {
+      group = store.newCategory({ name: opts.groupName, color: subjects[0]?.color ?? '#3f51b5', icon: '🎓' });
+      st.categories.push(group);
+    }
+    group.skipHolidays = !!opts.skipHolidays;
+    group.inAgenda = !!opts.inAgenda;
+    group.reminders = structuredClone(REM_PRESETS[opts.rem] ?? []).map((r) => ({ ...r, id: uid() }));
+    // Una subcategoría por nombre de asignatura (nombres iguales = misma categoría)
+    const catByName = new Map();
+    for (const s of subjects.filter((x) => x.include)) {
+      const k = norm(s.name);
+      if (catByName.has(k)) continue;
+      let cat = st.categories.find((c) => c.parentId === group.id && norm(c.name) === k);
+      if (!cat) {
+        cat = store.newCategory({ name: s.name, parentId: group.id, icon: '📚' });
+        st.categories.push(cat);
+      }
+      cat.color = s.color;
+      catByName.set(k, cat);
+    }
+    for (const b of built) {
+      const subj = bySubject.get(norm(guessSubject(b.ev.summary)));
+      if (!subj) continue;
+      const cat = catByName.get(norm(subj.name));
+      const act = guessActivity(b.ev.summary);
+      const title = opts.titleMode === 'orig' ? b.ev.summary : `${subj.name}${act ? ' · ' + act : ''}`;
+      st.items.push(store.newItem({
+        type: 'event', title, location: b.ev.location ?? '', notes: [b.ev.summary !== title ? b.ev.summary : '', b.ev.description ?? ''].filter(Boolean).join('\n'),
+        categoryId: cat.id, start: b.start, duration: b.duration, allDay: b.allDay, recurrence: b.recurrence, overrides: b.overrides ?? {},
+        shade: opts.useShades && act ? opts.shades[act] ?? 0 : 0,
+        exam: act === 'Examen', // usa los avisos de examen (Ajustes → Avisos)
+        source: `import:${group.id}`,
+      }));
+      count += b.mergedCount ?? 1;
+    }
+  });
+  return count;
+}
