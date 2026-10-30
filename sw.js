@@ -9,7 +9,7 @@ try { importScripts('recordatorio.js'); } catch (e) { /* sin recordatorio, pero 
 const R = self.MiAventuraRecordatorio;
 
 const PREFIX = 'mi-aventura-';
-const VERSION = PREFIX + 'v7'; // mantener igual que APP_VERSION en app.js
+const VERSION = PREFIX + 'v8'; // mantener igual que APP_VERSION en app.js
 const SHELL = [
   './',
   'index.html',
@@ -17,6 +17,7 @@ const SHELL = [
   'app.js',
   'importer.js',
   'recordatorio.js',
+  'sync.js',
   'manifest.webmanifest',
   'icons/icon.svg',
   'icons/icon-180.png',

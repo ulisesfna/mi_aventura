@@ -923,6 +923,26 @@ dialog::backdrop { background: rgba(22, 14, 6, .45); -webkit-backdrop-filter: bl
   font: 600 .9rem/1.2 var(--font-body);
 }
 a.menu-item { color: inherit; text-decoration: none; }
+.sync-state { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 600; }
+.sync-state::before { content: ''; flex-shrink: 0; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.sync-state.ok::before { background: var(--trip); }
+.sync-state.busy::before { background: var(--star); }
+.sync-state.bad::before { background: var(--danger); }
+.server-row { display: flex; gap: 8px; margin-top: 10px; }
+.server-row input, .pass-input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  outline: none;
+}
+.server-row input:focus, .pass-input:focus { border-color: var(--accent); }
+.pass-input { display: block; width: 100%; margin-top: 4px; font-size: 1.05rem; }
+.pass-show { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; color: var(--ink-2); font-size: .88rem; }
 .reminder-diag { margin-top: 12px; font-size: .82rem; }
 .reminder-diag summary { color: var(--muted); font-weight: 600; cursor: pointer; }
 .reminder-diag dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 0 12px; margin: 10px 0 0; }

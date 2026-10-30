@@ -14,7 +14,7 @@ RAIZ = os.path.dirname(AQUI)
 WWW = os.path.join(AQUI, 'www')
 
 # sw.js no va: dentro del APK la app ya está en el móvil y el recordatorio es nativo
-ARCHIVOS = ('index.html', 'manifest.webmanifest', 'styles.css', 'app.js', 'importer.js', 'recordatorio.js')
+ARCHIVOS = ('index.html', 'manifest.webmanifest', 'styles.css', 'app.js', 'importer.js', 'recordatorio.js', 'sync.js')
 
 shutil.rmtree(WWW, ignore_errors=True)
 os.makedirs(WWW)

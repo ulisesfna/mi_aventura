@@ -62,9 +62,45 @@
   }
   let data = load();
   let prefs = loadPrefs();
-  function save() {
+  data.deleted ||= {};
+
+  // Para sincronizar: cada día lleva `u` (cuándo cambió por última vez) y los borrados quedan
+  // anotados en data.deleted. Se calcula al guardar comparando con lo último guardado, así
+  // cualquier cambio (editor, mover, importar, deshacer…) queda registrado sin tocar cada sitio.
+  const dayCanon = (e) => (e ? JSON.stringify({ p: e.plans, t: e.trip || null }) : '');
+  const snapshot = () => new Map(Object.entries(data.days).map(([k, e]) => [k, { c: dayCanon(e), u: e.u }]));
+  let lastSaved = snapshot();
+
+  function stampChanges() {
+    const now = Date.now();
+    let changed = false;
+    for (const [k, e] of Object.entries(data.days)) {
+      const prev = lastSaved.get(k);
+      if (prev && prev.c === dayCanon(e)) {
+        if (!e.u && prev.u) e.u = prev.u; // mismo contenido reconstruido: conserva su fecha
+        continue;
+      }
+      e.u = now;
+      delete data.deleted[k];
+      changed = true;
+    }
+    for (const k of lastSaved.keys()) {
+      if (!data.days[k]) { data.deleted[k] = now; changed = true; }
+    }
+    const limit = now - 120 * 864e5;
+    for (const [k, t] of Object.entries(data.deleted)) if (t < limit) delete data.deleted[k];
+    lastSaved = snapshot();
+    return changed;
+  }
+
+  function persist() {
     try { localStorage.setItem(KEY, JSON.stringify(data)); }
     catch (e) { toast('No se ha podido guardar en este dispositivo'); }
+  }
+  function save() {
+    const changed = stampChanges();
+    persist();
+    if (changed) window.MiAventuraSync?.changed();
   }
   function savePrefs() {
     try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) { /* sin preferencias */ }
@@ -743,7 +779,7 @@
       const entry = { plans };
       const trip = d.trip ? (d.tripName.trim() || true) : null;
       if (trip) entry.trip = trip;
-      if (JSON.stringify(entry) === JSON.stringify(prev)) continue;
+      if (dayCanon(entry) === dayCanon(prev)) continue;
       data.days[k] = entry;
       wrote++;
       if (typeof trip === 'string') propagateTripName(k, trip);
@@ -1063,14 +1099,17 @@
     const n = allKeys().length;
     const last = prefs.lastBackup;
     const days = last ? Math.floor((Date.now() - last) / 864e5) : null;
-    $('#backup-dot').hidden = !(n >= 5 && (days === null || days > 30));
+    // Con la sincronización al día ya hay copia en el servidor: no hace falta insistir
+    const synced = window.MiAventuraSync?.getStatus();
+    const safe = synced?.enabled && synced.lastSync && Date.now() - synced.lastSync < 7 * 864e5;
+    $('#backup-dot').hidden = safe || !(n >= 5 && (days === null || days > 30));
     $('#backup-info').textContent = last
       ? `Última copia: ${days === 0 ? 'hoy' : days === 1 ? 'ayer' : `hace ${days} días`}.`
       : 'Tus recuerdos se guardan solo en este dispositivo. Haz copias de vez en cuando.';
   }
 
   /* ---------- recordatorio ---------- */
-  const APP_VERSION = 'v7'; // mantener igual que VERSION en sw.js
+  const APP_VERSION = 'v8'; // mantener igual que VERSION en sw.js
   const R = window.MiAventuraRecordatorio;
   const REMINDER_MSG = {
     off: `Te llegará una notificación si pasan ${R.DAYS} días sin que apuntes nada.`,
@@ -1435,7 +1474,7 @@
 
   $('#fab').addEventListener('click', openToday);
   $('#today-btn').addEventListener('click', () => scrollToToday(true));
-  $('#menu-btn').addEventListener('click', () => { updateBackupInfo(); renderReminder(); $('#menu').showModal(); });
+  $('#menu-btn').addEventListener('click', () => { renderSync(); renderReminder(); $('#menu').showModal(); });
   $('#search-toggle').addEventListener('click', () => toggleSearch());
   $('#search').addEventListener('input', (ev) => {
     query = ev.target.value;
@@ -1485,6 +1524,120 @@
   let lastToday = todayISO();
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && todayISO() !== lastToday) { lastToday = todayISO(); render(); }
+  });
+
+  /* ---------- sincronización (ver sync.js) ---------- */
+  const Sync = window.MiAventuraSync;
+
+  // Llega una versión fusionada de otro dispositivo
+  function applyRemote(merged) {
+    data.days = merged.days;
+    data.deleted = merged.deleted;
+    lastSaved = snapshot();
+    persist();
+    render();
+    // Lo último apuntado en cualquier dispositivo cuenta para el recordatorio
+    const last = Math.max(0, ...Object.values(data.days).map((e) => e.u || 0));
+    R.load().then(async (s) => {
+      if (last > (s.lastActivity || 0)) {
+        await R.update({ lastActivity: last });
+        if (NATIVE) scheduleNative();
+      }
+    }).catch(() => {});
+  }
+
+  // Ventana de la contraseña. Devuelve la contraseña escrita, o null si se cancela.
+  function askPass({ mode, error }) {
+    const dlg = $('#sync-pass');
+    const input = $('#sync-pass-input');
+    const err = $('#sync-pass-error');
+    const nueva = mode === 'confirm-new';
+    $('#sync-pass-title').textContent = nueva ? 'Repite la contraseña' : 'Tu contraseña de sincronización';
+    $('#sync-pass-help').textContent = nueva
+      ? 'No hay ningún dispositivo con esa contraseña, así que se creará tu copia cifrada. Repítela para evitar erratas y apúntala en un sitio seguro: si la olvidas, nadie puede recuperar lo guardado en el servidor (lo de tus dispositivos sí se mantiene).'
+      : 'Escribe la contraseña de sincronización. Si es la primera vez, invéntala (al menos 8 caracteres); en tus otros dispositivos, usa la misma.';
+    input.value = '';
+    input.type = 'password';
+    $('#sync-pass-show').checked = false;
+    err.textContent = error || '';
+    err.hidden = !error;
+    return new Promise((resolve) => {
+      const form = $('#sync-pass-form');
+      const cancels = $$('[data-close]', dlg);
+      // Se responde una sola vez: al continuar, al cancelar o al cerrarse la ventana de otro modo
+      const finish = (value) => {
+        form.removeEventListener('submit', onSubmit);
+        dlg.removeEventListener('close', onClose);
+        cancels.forEach((b) => b.removeEventListener('click', onCancel));
+        if (dlg.open) dlg.close();
+        resolve(value);
+      };
+      const onSubmit = (ev) => {
+        ev.preventDefault();
+        if (!nueva && input.value.length < 8) {
+          err.textContent = 'Usa al menos 8 caracteres.';
+          err.hidden = false;
+          return;
+        }
+        finish(input.value);
+      };
+      const onCancel = () => finish(null);
+      const onClose = () => finish(null);
+      form.addEventListener('submit', onSubmit);
+      dlg.addEventListener('close', onClose);
+      cancels.forEach((b) => b.addEventListener('click', onCancel));
+      dlg.showModal();
+      input.focus();
+    });
+  }
+  $('#sync-pass-show').addEventListener('change', (ev) => { $('#sync-pass-input').type = ev.target.checked ? 'text' : 'password'; });
+
+  const ago = (t) => {
+    const min = Math.round((Date.now() - t) / 60000);
+    if (min < 1) return 'ahora mismo';
+    if (min < 60) return `hace ${min} min`;
+    const h = Math.round(min / 60);
+    if (h < 24) return `hace ${h} h`;
+    return `el ${fmtStamp(t)}`;
+  };
+
+  function renderSync() {
+    const st = Sync.getStatus();
+    const el = $('#sync-state');
+    const [cls, text] = !st.enabled && st.state !== 'syncing' ? ['', 'Desactivada: tus recuerdos solo están en este dispositivo.']
+      : st.state === 'syncing' ? ['busy', 'Sincronizando…']
+      : st.state === 'needs-pass' ? ['bad', `Hace falta la contraseña: ${st.error}`]
+      : st.state === 'error' ? ['bad', `${st.error} Se reintentará sola.`]
+      : ['ok', `Sincronizado ${st.lastSync ? ago(st.lastSync) : ''}${st.pending ? ' · cambios pendientes' : ''}`];
+    el.className = 'sync-state ' + cls;
+    el.textContent = text;
+    $('#sync-connect').hidden = st.enabled && st.state !== 'needs-pass';
+    $('#sync-connect').textContent = st.state === 'needs-pass' ? 'Escribir la contraseña' : 'Activar sincronización';
+    $('#sync-now').hidden = !st.enabled || st.state === 'needs-pass';
+    $('#sync-off').hidden = !st.enabled;
+    $('#sync-server').value = st.server;
+    updateBackupInfo();
+  }
+
+  $('#sync-connect').addEventListener('click', async () => {
+    try {
+      if (Sync.getStatus().state === 'needs-pass') await Sync.disconnect();
+      await Sync.connect(askPass);
+      toast('Sincronización activada');
+    } catch (e) {
+      if (e.message !== 'Conexión cancelada') toast(e.message);
+    }
+    renderSync();
+  });
+  $('#sync-now').addEventListener('click', () => Sync.syncNow());
+  $('#sync-off').addEventListener('click', async () => {
+    await Sync.disconnect();
+    toast('Este dispositivo ya no se sincroniza (tus recuerdos siguen aquí)');
+  });
+  $('#sync-server-save').addEventListener('click', () => {
+    Sync.setServer($('#sync-server').value);
+    renderSync();
+    toast('Dirección del servidor guardada');
   });
 
   /* ---------- app de Android: arranque ---------- */
@@ -1546,6 +1699,8 @@
   applyTheme();
   render();
   scrollToToday(false);
+  Sync.onStatus(renderSync);
+  Sync.init({ getLocal: () => ({ days: data.days, deleted: data.deleted }), applyRemote });
 
   if (NATIVE) {
     startNative();

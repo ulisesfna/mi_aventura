@@ -39,6 +39,19 @@ Para que llegue con la app cerrada:
 - El permiso de notificaciones es común a todas tus apps de `github.io`.
 - Si no llega, abre ⋯ → «Recordatorio» → «Diagnóstico»: dice qué falla (permiso, instalación, versión antigua o que Android no ha despertado a la app).
 
+## Sincronización entre dispositivos (cifrada)
+
+Usa **tu servidor de Cloudflare del Calendario** (no hay que tocar nada allí): guarda una «caja» con tus recuerdos **cifrados en tu dispositivo** con tu contraseña. El servidor solo ve datos ilegibles, y sin la contraseña nadie puede ni encontrar la caja.
+
+- ⋯ → **Sincronización → Activar** → escribe tu contraseña (al menos 8 caracteres). La primera vez te pide repetirla para crear la caja; en los demás dispositivos, **la misma contraseña**.
+- Puede ser la misma que la del Calendario o otra: aunque coincidan, son cajas distintas.
+- Después va sola: al abrir la app, unos segundos después de cada cambio y cada 3 minutos.
+- Si cambias cosas en dos dispositivos, se juntan día a día (gana la versión más reciente de cada día; lo borrado se borra en todos). Si editas **el mismo día** en dos sitios sin conexión, se queda la última versión de ese día.
+- Lo que apuntes en cualquier dispositivo cuenta para el recordatorio de los demás.
+- ⚠️ **Apunta la contraseña en un sitio seguro.** Si la olvidas, lo del servidor no se puede abrir (lo de tus dispositivos sí se mantiene).
+
+*Detalle técnico:* AES-256-GCM con clave derivada de la contraseña (PBKDF2-SHA256, 600 000 iteraciones), guardada en el dispositivo como no exportable; la contraseña no se guarda. Rutas `/sync/get` y `/sync/put` del `worker.js` del Calendario. La dirección del servidor se puede cambiar en ⋯ → Sincronización → Servidor.
+
 ## App de Android (APK)
 
 Igual que el Calendario: GitHub fabrica la app sola cada vez que subes cambios y la deja en **Releases**. Dentro de la APK el recordatorio es una **alarma del propio móvil**: llega a su hora (por defecto a las 20:00) aunque la app esté cerrada, sin depender de Chrome.
@@ -56,7 +69,7 @@ Enlace fijo de descarga: **`https://github.com/TU-USUARIO/TU-REPOSITORIO/release
 
 1. En la versión web: ⋯ → **Descargar copia de seguridad**.
 2. Descarga e instala `MiAventura.apk` (permite instalar desde Chrome; si Play Protect avisa → *Más detalles* → **Instalar de todas formas**).
-3. Abre la app → **Restaurar copia** → elige el archivo del paso 1.
+3. Abre la app → **Restaurar copia** → elige el archivo del paso 1. (O, si ya usas la sincronización: ⋯ → **Sincronización → Activar** con tu contraseña y llegan solos.)
 4. ⋯ → **Recordatorio**: actívalo, acepta las notificaciones y pulsa **Probar con la app cerrada** (cierra la app; al minuto llega el aviso). En Xiaomi, quita el ahorro de batería con el botón que aparece.
 5. Desactiva el recordatorio en la versión web y desinstálala del móvil, para no apuntar en dos sitios ni recibir dos avisos.
 
