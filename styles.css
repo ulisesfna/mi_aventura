@@ -1,5 +1,20 @@
 /* Mi aventura · estilos */
 
+/* Emojis siempre en color.
+ * Algunas fuentes del sistema (p. ej. la de Xiaomi) traen versiones antiguas en blanco y negro de
+ * símbolos como ✊ o ☺; si van antes en la lista, el navegador las usa y el emoji sale monocromo
+ * (o roto si lleva tono de piel). Esta familia apunta a la fuente de emojis del propio dispositivo
+ * y solo se usa para los caracteres de emoji (unicode-range), así que va la primera en todas partes. */
+@font-face {
+  font-family: 'Emoji Color';
+  src: local('Noto Color Emoji'), local('NotoColorEmoji'), local('Apple Color Emoji'), local('AppleColorEmoji'),
+    local('Segoe UI Emoji'), local('SegoeUIEmoji'), local('Samsung Color Emoji'), local('SamsungColorEmoji');
+  unicode-range: U+00A9, U+00AE, U+200D, U+203C, U+2049, U+20E3, U+2122, U+2139, U+2194-2199, U+21A9-21AA,
+    U+231A-231B, U+2328, U+23CF, U+23E9-23F3, U+23F8-23FA, U+24C2, U+25AA-25AB, U+25B6, U+25C0, U+25FB-25FE,
+    U+2600-27BF, U+2934-2935, U+2B05-2B07, U+2B1B-2B1C, U+2B50, U+2B55, U+3030, U+303D, U+3297, U+3299,
+    U+FE0F, U+1F000-1FAFF, U+E0020-E007F;
+}
+
 :root {
   color-scheme: light;
   --bg: #FBF7F0;
@@ -26,7 +41,7 @@
   --shadow: 0 1px 2px rgba(70, 45, 20, .06), 0 10px 30px rgba(70, 45, 20, .10);
   --shadow-sm: 0 1px 2px rgba(70, 45, 20, .05);
   --font-display: 'Fraunces', Georgia, 'Times New Roman', serif;
-  --font-body: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+  --font-body: 'Emoji Color', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
   --tab-h: 64px;
   --head-h: 110px;
   --safe-b: env(safe-area-inset-bottom, 0px);
@@ -104,6 +119,10 @@ button { font: inherit; color: inherit; }
 svg { flex-shrink: 0; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 mark { background: var(--accent-soft); color: inherit; border-radius: 3px; padding: 0 1px; }
+/* Donde aparecen tus emojis: pedir siempre la versión en color */
+.d-plans, .otd-text, .peek-plans, .plan-input, .trip-name, .emo, .emoji-cloud, .paste-area, .text-out, .import-sample, .classics, .trip-head {
+  font-variant-emoji: emoji;
+}
 .muted { color: var(--muted); }
 
 /* ---------- cabecera ---------- */
@@ -152,6 +171,14 @@ mark { background: var(--accent-soft); color: inherit; border-radius: 3px; paddi
   padding: 2px;
 }
 .year-switch.muted-switch { opacity: .45; }
+.year-switch.is-global { background: var(--accent-soft); }
+.year-switch.is-global .year-label { color: var(--accent); }
+.display-global { font-size: 2.5rem; line-height: 1.05; }
+.h3-note { margin-left: 6px; color: var(--muted); font: 600 .75rem/1 var(--font-body); }
+.records { display: grid; grid-template-columns: auto 1fr; gap: 0 14px; margin: 0; }
+.records dt, .records dd { padding: 9px 0; border-bottom: 1px solid var(--line); }
+.records dt { color: var(--muted); font-size: .88rem; }
+.records dd { margin: 0; font-weight: 600; text-align: right; }
 .year-label {
   font: 600 1.05rem/1 var(--font-display);
   font-variant-numeric: tabular-nums;
@@ -923,6 +950,7 @@ dialog::backdrop { background: rgba(22, 14, 6, .45); -webkit-backdrop-filter: bl
   font: 600 .9rem/1.2 var(--font-body);
 }
 a.menu-item { color: inherit; text-decoration: none; }
+.version-line { margin: 0; font-weight: 600; }
 .sync-state { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 600; }
 .sync-state::before { content: ''; flex-shrink: 0; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
 .sync-state.ok::before { background: var(--trip); }
@@ -1006,7 +1034,7 @@ a.menu-item { color: inherit; text-decoration: none; }
   border-radius: 14px;
   background: var(--surface-2);
   color: var(--ink);
-  font: .88rem/1.55 ui-monospace, 'Cascadia Mono', Menlo, Consolas, monospace, 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji';
+  font: .88rem/1.55 'Emoji Color', ui-monospace, 'Cascadia Mono', Menlo, Consolas, monospace, 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji';
   resize: vertical;
 }
 

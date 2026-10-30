@@ -144,6 +144,7 @@
   let query = '';
   const filters = new Set();
   let peekDate = null;
+  let global = false; // Resumen de todos los años
 
   /* ---------- piezas de HTML ---------- */
   function highlight(text, q) {
@@ -168,12 +169,17 @@
     return out + esc(text.slice(last));
   }
 
+  // Símbolos que por defecto se dibujan como texto (☺, ✝, ❤…): se les añade el selector
+  // invisible U+FE0F, que pide la versión en color del emoji
+  const colorEmoji = (s) => s.replace(/\p{Extended_Pictographic}(?![︎️\u{1F3FB}-\u{1F3FF}])/gu,
+    (c) => (/\p{Emoji_Presentation}/u.test(c) ? c : c + '️'));
+
   function planHTML(p, q) {
     const cls = ['plan'];
     if (p.late) cls.push('late');
     if (p.star) cls.push('star');
     if (p.exam) cls.push('exam');
-    return `<span class="${cls.join(' ')}">${p.exam ? icon('cap', 'mk') : ''}${highlight(p.t, q)}${p.late ? icon('moon', 'mk') : ''}</span>`;
+    return `<span class="${cls.join(' ')}">${p.exam ? icon('cap', 'mk') : ''}${highlight(colorEmoji(p.t), q)}${p.late ? icon('moon', 'mk') : ''}</span>`;
   }
   const plansHTML = (e, q) => e.plans.map((p) => planHTML(p, q)).join('<span class="sep">+</span>');
 
@@ -450,16 +456,29 @@
     return [...counts.values()].filter((c) => c.n >= 2).sort((a, b) => b.n - a.n);
   }
 
+  // Barras verticales con la parte «hasta tarde» dentro
+  function barsHTML(items) {
+    const max = Math.max(...items.map((b) => b.d), 1);
+    return `<div class="bars" style="grid-template-columns:repeat(${items.length},minmax(0,1fr))">${items.map((b) => `<div class="bar ${b.dim ? 'dim' : ''}" title="${esc(b.title)}">
+        <span class="bar-v">${b.d || ''}</span>
+        <div class="bar-track"><div class="bar-fill" style="height:${(b.d / max) * 100}%"><div class="bar-late" style="height:${b.d ? (b.l / b.d) * 100 : 0}%"></div></div></div>
+        <span class="bar-l">${b.label}</span></div>`).join('')}</div>`;
+  }
+
+  // Resumen de un año, o de todos (global = true; se llega pasando del último año en el selector)
   function renderResumen() {
     const root = $('#view-resumen');
     const t = todayISO();
-    const keys = yearKeys(year).filter((k) => k <= t);
+    const keys = (global ? allKeys() : yearKeys(year)).filter((k) => k <= t);
+    const title = global ? 'Toda tu aventura' : year;
     if (!keys.length) {
-      root.innerHTML = `<div class="page-head"><h2 class="display">${year}</h2></div><div class="empty small"><h2>Sin datos todavía</h2><p>Cuando apuntes recuerdos de ${year} verás aquí su resumen.</p></div>`;
+      root.innerHTML = `<div class="page-head"><h2 class="display">${title}</h2></div><div class="empty small"><h2>Sin datos todavía</h2><p>Cuando apuntes recuerdos${global ? '' : ` de ${year}`} verás aquí su resumen.</p></div>`;
       return;
     }
     const cy = +t.slice(0, 4);
-    const totalDays = year < cy ? dayNum(iso(year + 1, 1, 1)) - dayNum(iso(year, 1, 1)) : dayNum(t) - dayNum(iso(year, 1, 1)) + 1;
+    const withYear = (k) => (global ? `${fmtShort(k)} ${k.slice(0, 4)}` : fmtShort(k));
+    const totalDays = global ? dayNum(t) - dayNum(keys[0]) + 1
+      : year < cy ? dayNum(iso(year + 1, 1, 1)) - dayNum(iso(year, 1, 1)) : dayNum(t) - dayNum(iso(year, 1, 1)) + 1;
     const E = keys.map((k) => data.days[k]);
     const lateDays = E.filter(isLate).length;
     const exams = E.reduce((n, e) => n + e.plans.filter((p) => p.exam).length, 0);
@@ -479,24 +498,50 @@
 
     const months = Array.from({ length: 12 }, () => ({ d: 0, l: 0 }));
     const wds = new Array(7).fill(0);
+    const years = new Map();
+    const monthOfYear = new Map(); // «2026-07» → días (para el récord del mes más movido)
     for (const k of keys) {
       const m = +k.slice(5, 7) - 1;
+      const late = isLate(data.days[k]);
       months[m].d++;
-      if (isLate(data.days[k])) months[m].l++;
+      if (late) months[m].l++;
       wds[(weekday(k) + 6) % 7]++;
+      const y = years.get(k.slice(0, 4)) || { d: 0, l: 0 };
+      y.d++;
+      if (late) y.l++;
+      years.set(k.slice(0, 4), y);
+      monthOfYear.set(k.slice(0, 7), (monthOfYear.get(k.slice(0, 7)) || 0) + 1);
     }
-    const maxM = Math.max(...months.map((m) => m.d), 1);
     const maxW = Math.max(...wds, 1);
     const busiest = months.reduce((b, m, i) => (m.d > months[b].d ? i : b), 0);
-    const emojis = emojiCounts(keys).slice(0, 24);
+    const emojis = emojiCounts(keys).slice(0, global ? 30 : 24);
     const maxE = emojis[0]?.n || 1;
-    const top = classics(keys).slice(0, 10);
-    const lastMonth = year < cy ? 12 : +t.slice(5, 7);
+    const top = classics(keys).slice(0, global ? 14 : 10);
+    const lastMonth = global || year < cy ? 12 : +t.slice(5, 7);
+
+    // Global: año a año (también los años sin nada apuntado entre medias)
+    let yearBars = [];
+    let records = [];
+    if (global) {
+      for (let y = +keys[0].slice(0, 4); y <= cy; y++) {
+        const v = years.get(String(y)) || { d: 0, l: 0 };
+        yearBars.push({ label: years.size > 6 ? `’${String(y).slice(2)}` : y, d: v.d, l: v.l, title: `${y}: ${plural(v.d, 'día', 'días')}, ${v.l} hasta tarde` });
+      }
+      const bestYear = [...years].sort((a, b) => b[1].d - a[1].d)[0];
+      const bestMonth = [...monthOfYear].sort((a, b) => b[1] - a[1])[0];
+      const fullest = keys.reduce((b, k) => (data.days[k].plans.length > data.days[b].plans.length ? k : b), keys[0]);
+      records = [
+        ['Año más movido', `${bestYear[0]} · ${plural(bestYear[1].d, 'día', 'días')}`],
+        ['Mes más movido', `${MONTHS[+bestMonth[0].slice(5) - 1]} ${bestMonth[0].slice(0, 4)} · ${plural(bestMonth[1], 'día', 'días')}`],
+        ['Día más intenso', `${withYear(fullest)} · ${plural(data.days[fullest].plans.length, 'plan', 'planes')}`],
+        ['Primer recuerdo', withYear(keys[0])],
+      ];
+    }
 
     root.innerHTML = `
       <div class="page-head">
-        <h2 class="display">${year}</h2>
-        <p><strong>${plural(keys.length, 'día', 'días')}</strong> con algo que contar · ${Math.round((keys.length / totalDays) * 100)}% de los días${year === cy ? ' hasta hoy' : ''}</p>
+        <h2 class="display${global ? ' display-global' : ''}">${title}</h2>
+        <p><strong>${plural(keys.length, 'día', 'días')}</strong> con algo que contar · ${Math.round((keys.length / totalDays) * 100)}% de los días${global ? ` desde el ${withYear(keys[0])}` : year === cy ? ' hasta hoy' : ''}</p>
       </div>
       <div class="stats">
         <div class="stat s-late">${icon('moon')}<b>${lateDays}</b><span>noches hasta tarde</span></div>
@@ -506,30 +551,39 @@
       </div>
       <div class="grid2">
         <div class="card">
-          <h3>Mes a mes</h3>
-          <div class="bars">${months.map((m, i) => `<div class="bar ${i >= lastMonth ? 'dim' : ''}" title="${MONTHS[i]}: ${plural(m.d, 'día', 'días')}, ${m.l} hasta tarde">
-              <span class="bar-v">${m.d || ''}</span>
-              <div class="bar-track"><div class="bar-fill" style="height:${(m.d / maxM) * 100}%"><div class="bar-late" style="height:${m.d ? (m.l / m.d) * 100 : 0}%"></div></div></div>
-              <span class="bar-l">${MONTHS_SHORT[i].slice(0, 1).toUpperCase()}</span></div>`).join('')}</div>
-          <p class="foot"><i class="lg c-late"></i> parte hasta tarde · Mes más movido: <strong>${MONTHS[busiest]}</strong></p>
+          ${global ? `<h3>Año a año</h3>${barsHTML(yearBars)}
+          <p class="foot"><i class="lg c-late"></i> parte hasta tarde</p>` : `<h3>Mes a mes</h3>
+          ${barsHTML(months.map((m, i) => ({ label: MONTHS_SHORT[i].slice(0, 1).toUpperCase(), d: m.d, l: m.l, dim: i >= lastMonth, title: `${MONTHS[i]}: ${plural(m.d, 'día', 'días')}, ${m.l} hasta tarde` })))}
+          <p class="foot"><i class="lg c-late"></i> parte hasta tarde · Mes más movido: <strong>${MONTHS[busiest]}</strong></p>`}
         </div>
         <div class="card">
           <h3>Por día de la semana</h3>
           <div class="hbars">${['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'].map((n, i) => `<div class="hbar"><span>${n}</span><div class="hbar-track"><div style="width:${(wds[i] / maxW) * 100}%"></div></div><b>${wds[i]}</b></div>`).join('')}</div>
-          ${best.len > 1 ? `<p class="foot">Racha más larga: <strong>${best.len} días seguidos</strong> (${fmtShort(best.start)} – ${fmtShort(best.end)})</p>` : ''}
+          ${best.len > 1 ? `<p class="foot">Racha más larga: <strong>${best.len} días seguidos</strong> (${withYear(best.start)} – ${withYear(best.end)})</p>` : ''}
         </div>
       </div>
+      ${global ? `<div class="grid2">
+        <div class="card">
+          <h3>Por meses <span class="h3-note">todos los años</span></h3>
+          ${barsHTML(months.map((m, i) => ({ label: MONTHS_SHORT[i].slice(0, 1).toUpperCase(), d: m.d, l: m.l, title: `${MONTHS[i]}: ${plural(m.d, 'día', 'días')} en total` })))}
+          <p class="foot">Tu mes: <strong>${MONTHS[busiest]}</strong></p>
+        </div>
+        <div class="card">
+          <h3>Récords</h3>
+          <dl class="records">${records.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>
+        </div>
+      </div>` : ''}
       ${top.length ? `<div class="card">
-        <h3>Los clásicos del año</h3>
+        <h3>${global ? 'Los clásicos de siempre' : 'Los clásicos del año'}</h3>
         <ol class="classics">${top.map((c) => `<li><span>${esc(c.t)}</span><b>×${c.n}</b></li>`).join('')}</ol>
       </div>` : ''}
       ${emojis.length ? `<div class="card">
         <h3>Tus emojis</h3>
-        <div class="emoji-cloud">${emojis.map((e) => `<span style="--s:${0.9 + (e.n / maxE) * 1.3}"><em>${e.e}</em><small>${e.n}</small></span>`).join('')}</div>
+        <div class="emoji-cloud">${emojis.map((e) => `<span style="--s:${0.9 + (e.n / maxE) * 1.3}"><em>${colorEmoji(e.e)}</em><small>${e.n}</small></span>`).join('')}</div>
       </div>` : ''}
       ${tripRuns.length ? `<div class="card">
         <h3>Viajes</h3>
-        <ul class="trip-list">${tripRuns.map((r) => `<li><button data-reveal="${r.start}">${icon('plane')}<strong>${esc(r.name || 'Viaje')}</strong><span>${fmtShort(r.start)}${r.len > 1 ? ' – ' + fmtShort(r.end) : ''} · ${plural(r.len, 'día', 'días')}</span></button></li>`).join('')}</ul>
+        <ul class="trip-list">${tripRuns.map((r) => `<li><button data-reveal="${r.start}">${icon('plane')}<strong>${esc(r.name || 'Viaje')}</strong><span>${fmtShort(r.start)}${r.len > 1 ? ' – ' + fmtShort(r.end) : ''}${global ? ' ' + r.end.slice(0, 4) : ''} · ${plural(r.len, 'día', 'días')}</span></button></li>`).join('')}</ul>
       </div>` : ''}`;
   }
 
@@ -550,9 +604,13 @@
   function render() {
     const [minY, maxY] = yearRange();
     year = Math.min(Math.max(year, minY), maxY);
-    $('#year-label').textContent = year;
-    $('#year-prev').disabled = year <= minY;
-    $('#year-next').disabled = year >= maxY;
+    // El resumen global solo existe en «Resumen»: es la posición siguiente al último año
+    if (view !== 'resumen') global = false;
+    $('#year-label').textContent = global ? 'Todo' : year;
+    $('.year-switch').classList.toggle('is-global', global);
+    $('#year-prev').disabled = !global && year <= minY;
+    $('#year-next').disabled = global || (year >= maxY && view !== 'resumen');
+    $('#year-next').setAttribute('aria-label', view === 'resumen' && year >= maxY ? 'Resumen de todos los años' : 'Año siguiente');
     for (const v of ['diario', 'anio', 'resumen']) $('#view-' + v).hidden = view !== v;
     for (const b of $$('.tab')) b.setAttribute('aria-current', b.dataset.view === view ? 'page' : 'false');
     const searching = !!(query || filters.size);
@@ -670,7 +728,7 @@
   function renderEmojiBar() {
     const used = emojiCounts(allKeys()).slice(0, 28).map((e) => e.e);
     const list = used.length >= 8 ? used : [...new Set([...used, ...DEFAULT_EMOJIS])].slice(0, 24);
-    $('#emoji-bar').innerHTML = list.map((e) => `<button type="button" class="emo" data-emoji="${esc(e)}">${e}</button>`).join('');
+    $('#emoji-bar').innerHTML = list.map((e) => colorEmoji(e)).map((e) => `<button type="button" class="emo" data-emoji="${esc(e)}">${e}</button>`).join('');
   }
 
   // Guarda en borrador el estado del día que se está mostrando
@@ -1109,7 +1167,7 @@
   }
 
   /* ---------- recordatorio ---------- */
-  const APP_VERSION = 'v8'; // mantener igual que VERSION en sw.js
+  const APP_VERSION = 'v9'; // mantener igual que VERSION en sw.js
   const R = window.MiAventuraRecordatorio;
   const REMINDER_MSG = {
     off: `Te llegará una notificación si pasan ${R.DAYS} días sin que apuntes nada.`,
@@ -1474,7 +1532,7 @@
 
   $('#fab').addEventListener('click', openToday);
   $('#today-btn').addEventListener('click', () => scrollToToday(true));
-  $('#menu-btn').addEventListener('click', () => { renderSync(); renderReminder(); $('#menu').showModal(); });
+  $('#menu-btn').addEventListener('click', () => { renderSync(); renderReminder(); renderVersion(); $('#menu').showModal(); });
   $('#search-toggle').addEventListener('click', () => toggleSearch());
   $('#search').addEventListener('input', (ev) => {
     query = ev.target.value;
@@ -1491,9 +1549,15 @@
     render();
     window.scrollTo({ top: 0 });
   });
-  $('#year-prev').addEventListener('click', () => { year--; peekDate = null; render(); window.scrollTo({ top: 0 }); });
+  $('#year-prev').addEventListener('click', () => {
+    if (global) global = false; else year--;
+    peekDate = null;
+    render();
+    window.scrollTo({ top: 0 });
+  });
   $('#year-next').addEventListener('click', () => {
-    year++;
+    if (view === 'resumen' && year >= yearRange()[1]) global = true;
+    else year++;
     peekDate = null;
     render();
     window.scrollTo({ top: 0 });
@@ -1651,25 +1715,74 @@
     return false;
   }
 
-  // ¿Hay un APK más nuevo en GitHub? Como mucho una consulta cada 12 h
-  async function checkUpdate() {
-    const KEY_UPD = 'mi-aventura:apk-update';
-    const info = await fetch('apk-version.json').then((r) => r.json()).catch(() => null);
-    if (!info?.repo || !info.build) return;
+  /* --- versiones nuevas --- */
+  const UPD_KEY = 'mi-aventura:apk-update';
+  const apkInfo = () => fetch('apk-version.json').then((r) => r.json()).catch(() => null);
+  const apkUrl = (info) => `https://github.com/${info.repo}/releases/latest/download/${APK_NAME}`;
+
+  // Última versión publicada en GitHub (número de compilación). Sin `force`, como mucho una consulta cada 12 h.
+  async function latestApk(info, force) {
     let last = null;
-    try { last = JSON.parse(localStorage.getItem(KEY_UPD)); } catch (e) { /* nada guardado */ }
-    if (!last || Date.now() - last.at > 12 * 3600e3) {
-      const r = await fetch(`https://api.github.com/repos/${info.repo}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' } }).catch(() => null);
-      if (!r?.ok) return;
+    try { last = JSON.parse(localStorage.getItem(UPD_KEY)); } catch (e) { /* nada guardado */ }
+    if (force || !last || Date.now() - last.at > 12 * 3600e3) {
+      const r = await fetch(`https://api.github.com/repos/${info.repo}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' } });
+      if (!r.ok) throw new Error(`GitHub respondió ${r.status}`);
       const j = await r.json();
       last = { at: Date.now(), latest: parseInt(String(j.tag_name || '').replace(/\D/g, ''), 10) || 0 };
-      try { localStorage.setItem(KEY_UPD, JSON.stringify(last)); } catch (e) { /* sin guardar */ }
+      try { localStorage.setItem(UPD_KEY, JSON.stringify(last)); } catch (e) { /* sin guardar */ }
     }
-    if (last.latest > info.build) {
-      const url = `https://github.com/${info.repo}/releases/latest/download/${APK_NAME}`;
-      toast(`Hay una versión nueva de la app (1.${last.latest})`, 'Descargar', () => { location.href = url; }, 30000);
-    }
+    return last.latest;
   }
+
+  // Al abrir la APK: aviso discreto si hay versión nueva
+  async function checkUpdate() {
+    const info = await apkInfo();
+    if (!info?.repo || !info.build) return;
+    const latest = await latestApk(info, false).catch(() => 0);
+    if (latest > info.build) toast(`Hay una versión nueva de la app (1.${latest})`, 'Descargar', () => { location.href = apkUrl(info); }, 30000);
+  }
+
+  async function renderVersion() {
+    const info = NATIVE ? await apkInfo() : null;
+    $('#update-state').textContent = NATIVE
+      ? (info?.build ? `Versión 1.${info.build} · ${info.date}` : 'App de Android')
+      : `Versión ${APP_VERSION.slice(1)} (web)`;
+    $('#update-get').hidden = true;
+  }
+
+  $('#update-check').addEventListener('click', async () => {
+    const out = $('#update-state');
+    out.textContent = 'Buscando…';
+    try {
+      if (NATIVE) {
+        const info = await apkInfo();
+        if (!info?.repo) throw new Error('sin repositorio');
+        const latest = await latestApk(info, true);
+        if (latest > info.build) {
+          out.textContent = `Hay una versión nueva: 1.${latest} (tienes la 1.${info.build}).`;
+          $('#update-get').hidden = false;
+          $('#update-get').onclick = () => { location.href = apkUrl(info); };
+        } else {
+          out.textContent = `Tienes la última versión (1.${info.build}).`;
+        }
+        return;
+      }
+      // Web: el service worker comprueba si sw.js ha cambiado; si sí, se instala y se recarga la página
+      const reg = await getReg();
+      if (!reg) { location.reload(); return; }
+      await reg.update();
+      const w = reg.installing || reg.waiting;
+      if (!w) { out.textContent = `Tienes la última versión (${APP_VERSION.slice(1)}).`; return; }
+      out.textContent = 'Hay una versión nueva. Actualizando…';
+      await new Promise((res) => {
+        w.addEventListener('statechange', () => { if (w.state === 'activated') res(); });
+        setTimeout(res, 8000);
+      });
+      location.reload();
+    } catch (e) {
+      out.textContent = 'No se ha podido comprobar. Revisa la conexión a internet.';
+    }
+  });
 
   function startNative() {
     document.documentElement.classList.add('native');
