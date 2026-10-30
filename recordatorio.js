@@ -55,7 +55,21 @@ self.MiAventuraRecordatorio = (() => {
     return idle;
   }
 
-  const text = (idle) => `Llevas ${idle} días sin apuntar nada. ¿Ha pasado algo que merezca quedarse?`;
+  const TEMPLATE = 'Llevas %d días sin apuntar nada. ¿Ha pasado algo que merezca quedarse?';
+  const text = (idle) => TEMPLATE.replace('%d', idle);
 
-  return { TAG, DAYS, load, update, due, text };
+  // App de Android: el aviso se programa a una hora fija (por defecto las 20:00) del día
+  // en que se cumplen DAYS días sin apuntar nada, y se repite cada DAYS días.
+  const HOUR = '20:00';
+  function nextAt(s, now = Date.now()) {
+    if (!s.enabled || !s.lastActivity) return 0;
+    const [h, m] = (s.hora || HOUR).split(':').map(Number);
+    const d = new Date(midnight(s.lastActivity));
+    d.setDate(d.getDate() + DAYS);
+    d.setHours(h || 0, m || 0, 0, 0);
+    while (d.getTime() <= now) d.setDate(d.getDate() + DAYS);
+    return d.getTime();
+  }
+
+  return { TAG, DAYS, HOUR, TEMPLATE, load, update, due, text, nextAt, daysBetween };
 })();

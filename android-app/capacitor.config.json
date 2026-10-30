@@ -1,0 +1,11 @@
+{
+  "appId": "io.github.ulisesfna.miaventura",
+  "appName": "Mi aventura",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}

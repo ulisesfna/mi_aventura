@@ -34,6 +34,21 @@
   const norm = (s) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
+  /* ---------- app de Android (APK hecha con Capacitor) ----------
+   * Dentro de la APK existe window.Capacitor: el recordatorio lo programa el propio móvil
+   * (plugin «Recordatorio», ver android-app/nativo) y las copias se guardan con «Compartir».
+   * En el navegador NATIVE es false y todo funciona como siempre.
+   */
+  const Cap = window.Capacitor;
+  const NATIVE = !!Cap?.isNativePlatform?.() && typeof Cap.registerPlugin === 'function';
+  const Nativo = NATIVE ? {
+    aviso: Cap.registerPlugin('Recordatorio'),
+    app: Cap.registerPlugin('App'),
+    fs: Cap.registerPlugin('Filesystem'),
+    share: Cap.registerPlugin('Share'),
+  } : null;
+  const APK_NAME = 'MiAventura.apk';
+
   /* ---------- datos ---------- */
   function load() {
     try {
@@ -217,9 +232,12 @@
     return `<div class="empty">
       <div class="empty-art" aria-hidden="true"><span></span><span></span><span></span></div>
       <h2>${first ? 'Tu aventura empieza aquí' : `Aún no hay recuerdos en ${year}`}</h2>
-      <p>${first ? 'Apunta los días que se salen de lo normal. Si ya los tienes en las notas del móvil o en un .docx, tráelos de golpe.' : 'Los días que hagas algo distinto aparecerán aquí.'}</p>
+      <p>${!first ? 'Los días que hagas algo distinto aparecerán aquí.'
+        : NATIVE ? '¿Vienes de la versión web? Allí, en ⋯ → «Descargar copia de seguridad», guarda tus recuerdos; aquí, restaura ese archivo.'
+        : 'Apunta los días que se salen de lo normal. Si ya los tienes en las notas del móvil o en un .docx, tráelos de golpe.'}</p>
       <div class="empty-actions">
-        ${first ? `<button class="btn btn-primary" data-action="import-docx">Importar mi .docx</button><button class="btn btn-ghost" data-action="import-paste">Pegar desde notas</button>` : ''}
+        ${first && NATIVE ? `<button class="btn btn-primary" data-action="import-json">Restaurar copia</button><button class="btn btn-ghost" data-action="import-docx">Importar .docx</button>` : ''}
+        ${first && !NATIVE ? `<button class="btn btn-primary" data-action="import-docx">Importar mi .docx</button><button class="btn btn-ghost" data-action="import-paste">Pegar desde notas</button>` : ''}
         <button class="btn ${first ? 'btn-ghost' : 'btn-primary'}" data-add="${year === new Date().getFullYear() ? todayISO() : iso(year, 1, 1)}">Añadir recuerdo</button>
       </div>
     </div>`;
@@ -831,7 +849,7 @@
 
   /* ---------- toast ---------- */
   let toastTimer = null;
-  function toast(msg, actionLabel, action) {
+  function toast(msg, actionLabel, action, ms) {
     const el = $('#toast');
     el.innerHTML = `<span>${esc(msg)}</span>${actionLabel ? `<button>${esc(actionLabel)}</button>` : ''}`;
     el.hidden = false;
@@ -840,7 +858,7 @@
     el.classList.add('show');
     if (actionLabel) $('button', el).onclick = () => { el.hidden = true; action(); };
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.hidden = true; }, actionLabel ? 6000 : 2600);
+    toastTimer = setTimeout(() => { el.hidden = true; }, ms || (actionLabel ? 6000 : 2600));
   }
 
   /* ---------- importar ---------- */
@@ -982,22 +1000,43 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 4000);
   }
 
-  async function exportJSON() {
-    const body = JSON.stringify({ app: 'mi-aventura', version: 1, exported: new Date().toISOString(), days: data.days }, null, 1);
-    const name = `mi-aventura-${todayISO()}.json`;
-    const file = new File([body], name, { type: 'application/json' });
+  // Guarda un archivo. En la app de Android no hay descargas: se escribe en la caché y se abre el
+  // menú «Compartir» (Drive, Archivos, correo…). Devuelve false si se cancela.
+  async function saveFile(name, text, type) {
+    if (NATIVE) {
+      try {
+        const { uri } = await Nativo.fs.writeFile({ path: name, data: text, directory: 'CACHE', encoding: 'utf8' });
+        await Nativo.share.share({ title: name, files: [uri], dialogTitle: 'Guardar en…' });
+        return true;
+      } catch (err) {
+        if (/cancel/i.test(err?.message || '')) return false;
+        throw err;
+      }
+    }
+    const file = new File([text], name, { type });
     try {
       if (matchMedia('(pointer: coarse)').matches && navigator.canShare?.({ files: [file] })) {
-        await navigator.share({ files: [file], title: 'Copia de Mi aventura' });
+        await navigator.share({ files: [file], title: name });
       } else download(file, name);
     } catch (err) {
-      if (err?.name === 'AbortError') return;
+      if (err?.name === 'AbortError') return false;
       download(file, name);
+    }
+    return true;
+  }
+
+  async function exportJSON() {
+    const body = JSON.stringify({ app: 'mi-aventura', version: 1, exported: new Date().toISOString(), days: data.days }, null, 1);
+    try {
+      if (!(await saveFile(`mi-aventura-${todayISO()}.json`, body, 'application/json'))) return;
+    } catch (err) {
+      toast('No se ha podido guardar la copia');
+      return;
     }
     prefs.lastBackup = Date.now();
     savePrefs();
     updateBackupInfo();
-    toast('Copia descargada');
+    toast(NATIVE ? 'Copia guardada' : 'Copia descargada');
   }
 
   function toText() {
@@ -1031,7 +1070,7 @@
   }
 
   /* ---------- recordatorio ---------- */
-  const APP_VERSION = 'v6'; // mantener igual que VERSION en sw.js
+  const APP_VERSION = 'v7'; // mantener igual que VERSION en sw.js
   const R = window.MiAventuraRecordatorio;
   const REMINDER_MSG = {
     off: `Te llegará una notificación si pasan ${R.DAYS} días sin que apuntes nada.`,
@@ -1042,7 +1081,7 @@
   };
 
   function getReg() {
-    if (!('serviceWorker' in navigator) || !location.protocol.startsWith('http')) return Promise.resolve(null);
+    if (NATIVE || !('serviceWorker' in navigator) || !location.protocol.startsWith('http')) return Promise.resolve(null);
     return Promise.race([navigator.serviceWorker.ready, new Promise((r) => setTimeout(() => r(null), 4000))]);
   }
 
@@ -1064,12 +1103,113 @@
   async function touchActivity() {
     try {
       await R.update({ lastActivity: Date.now() });
+      if (NATIVE) {
+        Nativo.aviso.descartar().catch(() => {});
+        await scheduleNative();
+        return;
+      }
       const reg = await getReg();
       (await reg?.getNotifications({ tag: R.TAG }))?.forEach((n) => n.close());
     } catch (e) { /* sin IndexedDB no hay recordatorio */ }
   }
 
+  /* --- recordatorio en la app de Android: una alarma del propio móvil --- */
+  const fmtWhen = (t) => {
+    const d = new Date(t);
+    return `${WD_LONG[d.getDay()]} ${d.getDate()} de ${MONTHS[d.getMonth()].toLowerCase()} a las ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  // Programa (o quita) el aviso según la última vez que apuntaste algo
+  async function scheduleNative() {
+    if (!NATIVE) return null;
+    const s = await R.load();
+    const at = R.nextAt(s);
+    try {
+      return await Nativo.aviso.programar(at
+        ? { at, dias: R.daysBetween(s.lastActivity, at), cadaDias: R.DAYS, titulo: 'Mi aventura', plantilla: R.TEMPLATE }
+        : { at: 0 });
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Permiso de notificaciones (Android 13+ lo pregunta; antes, o si se denegó, abre los ajustes)
+  async function nativePermission() {
+    const st = await Nativo.aviso.estado().catch(() => null);
+    if (st?.notificaciones) return true;
+    if ((st?.android ?? 33) >= 33) {
+      const r = await Nativo.aviso.requestPermissions({ permissions: ['avisos'] }).catch(() => null);
+      if (r?.avisos === 'granted') return true;
+    }
+    await Nativo.aviso.abrirAjustes({ tipo: 'avisos' });
+    return false;
+  }
+
+  async function renderReminderNative(msg) {
+    const s = await R.load();
+    const st = await Nativo.aviso.estado().catch(() => null);
+    $('#reminder-toggle').checked = !!s.enabled;
+    $('#reminder-test').hidden = !s.enabled;
+    $('#reminder-test-later').hidden = !s.enabled;
+    $('#reminder-time-wrap').hidden = !s.enabled;
+    $('#reminder-time').value = s.hora || R.HOUR;
+    let text = msg;
+    if (!text) {
+      if (!s.enabled) text = REMINDER_MSG.off;
+      else if (!st?.notificaciones) text = 'Falta el permiso de notificaciones: pulsa «Permitir notificaciones».';
+      else if (st.siguiente) text = `Activado. Si no apuntas nada antes, te avisaré el ${fmtWhen(st.siguiente)}.`;
+      else text = 'Activado.';
+    }
+    $('#reminder-status').textContent = text;
+    const fixes = [];
+    if (s.enabled && st) {
+      if (!st.notificaciones) fixes.push(['avisos', 'Permitir notificaciones']);
+      if (!st.exactas) fixes.push(['exactas', 'Permitir alarmas exactas']);
+      if (!st.bateria) fixes.push(['bateria', 'Quitar el ahorro de batería']);
+    }
+    $('#reminder-fix').innerHTML = fixes.map(([t, l]) => `<button type="button" class="btn btn-ghost" data-fix="${t}">${l}</button>`).join('');
+  }
+
+  $('#reminder-fix').addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-fix]');
+    if (!b) return;
+    if (b.dataset.fix === 'avisos') {
+      if (await nativePermission()) { await scheduleNative(); renderReminder(); }
+    } else {
+      Nativo.aviso.abrirAjustes({ tipo: b.dataset.fix });
+    }
+  });
+
+  $('#reminder-time').addEventListener('change', async (ev) => {
+    if (!/^\d{2}:\d{2}$/.test(ev.target.value)) return;
+    await R.update({ hora: ev.target.value });
+    await scheduleNative();
+    renderReminder();
+  });
+
+  $('#reminder-test-later').addEventListener('click', async () => {
+    await Nativo.aviso.probar({ segundos: 60, titulo: 'Mi aventura', texto: 'Prueba con la app cerrada: el recordatorio funciona.' });
+    $('#reminder-status').textContent = 'Cierra la app (o bloquea el móvil): el aviso de prueba llegará en 1 minuto.';
+  });
+
+  async function renderDiagnosticsNative() {
+    const s = await R.load();
+    const st = await Nativo.aviso.estado().catch(() => ({}));
+    const info = await fetch('apk-version.json').then((r) => r.json()).catch(() => ({}));
+    const rows = [
+      ['Notificaciones', st.notificaciones ? 'permitidas' : 'bloqueadas', !!st.notificaciones],
+      ['Alarmas exactas', st.exactas ? 'permitidas' : 'no permitidas', !!st.exactas],
+      ['Ahorro de batería', st.bateria ? 'sin restricciones' : 'puede retrasar el aviso', st.bateria ? true : null],
+      ['Próximo aviso', st.siguiente ? fmtStamp(st.siguiente) : 'ninguno', s.enabled ? !!st.siguiente : null],
+      ['Última vez que apuntaste', fmtStamp(s.lastActivity), null],
+      ['Versión de la app', info.build ? `1.${info.build} (${info.date})` : '—', null],
+      ['Móvil', `${st.fabricante || '?'} · Android API ${st.android || '?'}`, null],
+    ];
+    $('#reminder-diag').innerHTML = rows.map(([k, v, ok]) => `<dt>${esc(k)}</dt><dd class="${ok === true ? 'ok' : ok === false ? 'bad' : ''}">${esc(v)}</dd>`).join('');
+  }
+
   async function renderReminder(override) {
+    if (NATIVE) return renderReminderNative(override && REMINDER_MSG[override]);
     const s = await R.load();
     $('#reminder-toggle').checked = !!s.enabled;
     $('#reminder-test').hidden = !s.enabled;
@@ -1083,6 +1223,16 @@
   }
 
   $('#reminder-toggle').addEventListener('change', async (ev) => {
+    if (NATIVE) {
+      const s = await R.load();
+      await R.update(ev.target.checked
+        ? { enabled: true, lastActivity: s.lastActivity || Date.now(), hora: s.hora || R.HOUR }
+        : { enabled: false });
+      if (ev.target.checked) await nativePermission();
+      await scheduleNative();
+      renderReminder();
+      return;
+    }
     if (!ev.target.checked) {
       await R.update({ enabled: false });
       try { await (await getReg())?.periodicSync?.unregister(R.TAG); } catch (e) { /* nada que quitar */ }
@@ -1118,6 +1268,12 @@
 
   $('#reminder-test').addEventListener('click', async () => {
     const out = $('#reminder-status');
+    if (NATIVE) {
+      await Nativo.aviso.probar({ segundos: 0, titulo: 'Mi aventura', texto: `Prueba: así te avisaré cuando pasen ${R.DAYS} días sin apuntar nada.` });
+      out.textContent = 'Aviso enviado. Si no lo ves, abre «Diagnóstico» y revisa lo que salga en rojo.';
+      renderDiagnostics();
+      return;
+    }
     if (!('Notification' in window) || Notification.permission !== 'granted') { renderReminder(); return; }
     const reg = await getReg();
     if (!reg?.active) { out.textContent = 'La parte de la app que envía avisos no está activa. Cierra la app del todo y vuelve a abrirla.'; return; }
@@ -1149,6 +1305,7 @@
   };
 
   async function renderDiagnostics() {
+    if (NATIVE) return renderDiagnosticsNative();
     const box = $('#reminder-diag');
     const s = await R.load();
     const reg = await getReg();
@@ -1308,7 +1465,8 @@
     catch (e) { $('#text-out').select(); document.execCommand('copy'); toast('Copiado'); }
   });
   $('#text-download').addEventListener('click', () => {
-    download(new Blob([$('#text-out').value], { type: 'text/plain;charset=utf-8' }), `mi-aventura-${todayISO()}.txt`);
+    saveFile(`mi-aventura-${todayISO()}.txt`, $('#text-out').value, 'text/plain;charset=utf-8')
+      .catch(() => toast('No se ha podido guardar el archivo'));
   });
 
   let ticking = false;
@@ -1329,12 +1487,69 @@
     if (document.visibilityState === 'visible' && todayISO() !== lastToday) { lastToday = todayISO(); render(); }
   });
 
+  /* ---------- app de Android: arranque ---------- */
+
+  // Botón «atrás» de Android: cierra lo que haya abierto antes de salir de la app
+  function closeTop() {
+    const open = $$('dialog[open]');
+    if (open.length) { open[open.length - 1].close(); return true; }
+    if (!$('#searchbar').hidden) { toggleSearch(false); return true; }
+    if (view !== 'diario') { setView('diario'); return true; }
+    return false;
+  }
+
+  // ¿Hay un APK más nuevo en GitHub? Como mucho una consulta cada 12 h
+  async function checkUpdate() {
+    const KEY_UPD = 'mi-aventura:apk-update';
+    const info = await fetch('apk-version.json').then((r) => r.json()).catch(() => null);
+    if (!info?.repo || !info.build) return;
+    let last = null;
+    try { last = JSON.parse(localStorage.getItem(KEY_UPD)); } catch (e) { /* nada guardado */ }
+    if (!last || Date.now() - last.at > 12 * 3600e3) {
+      const r = await fetch(`https://api.github.com/repos/${info.repo}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' } }).catch(() => null);
+      if (!r?.ok) return;
+      const j = await r.json();
+      last = { at: Date.now(), latest: parseInt(String(j.tag_name || '').replace(/\D/g, ''), 10) || 0 };
+      try { localStorage.setItem(KEY_UPD, JSON.stringify(last)); } catch (e) { /* sin guardar */ }
+    }
+    if (last.latest > info.build) {
+      const url = `https://github.com/${info.repo}/releases/latest/download/${APK_NAME}`;
+      toast(`Hay una versión nueva de la app (1.${last.latest})`, 'Descargar', () => { location.href = url; }, 30000);
+    }
+  }
+
+  function startNative() {
+    document.documentElement.classList.add('native');
+    scheduleNative();
+    // Abierta tocando el recordatorio: al editor de hoy (en frío lo guarda MainActivity; en caliente llega un evento)
+    Nativo.aviso.addListener('abrirNuevo', () => { if (!editor.open) openToday(); });
+    Nativo.aviso.consumirAbrirNuevo().then((r) => { if (r?.nuevo && !editor.open) openToday(); }).catch(() => {});
+    Nativo.app.addListener('backButton', () => { if (!closeTop()) Nativo.app.minimizeApp(); });
+    Nativo.app.addListener('resume', () => {
+      scheduleNative();
+      if ($('#menu').open) { renderReminder(); if ($('#reminder-diag-wrap').open) renderDiagnostics(); }
+      if (todayISO() !== lastToday) { lastToday = todayISO(); render(); }
+    });
+    setTimeout(() => checkUpdate().catch(() => {}), 5000);
+  }
+
+  // En la web servida desde GitHub Pages: enlace para descargar la app de Android
+  (function apkLink() {
+    const m = location.hostname.match(/^([\w-]+)\.github\.io$/);
+    const repo = location.pathname.split('/').filter(Boolean)[0];
+    if (NATIVE || !m || !repo) return;
+    $('#apk-link').href = `https://github.com/${m[1]}/${repo}/releases/latest/download/${APK_NAME}`;
+    $('#apk-group').hidden = false;
+  })();
+
   /* ---------- arranque ---------- */
   applyTheme();
   render();
   scrollToToday(false);
 
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  if (NATIVE) {
+    startNative();
+  } else if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
     // Mensajes de nuestro service worker; los de otras apps del dominio se ignoran
     navigator.serviceWorker.addEventListener('message', (ev) => {

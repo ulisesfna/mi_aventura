@@ -39,6 +39,31 @@ Para que llegue con la app cerrada:
 - El permiso de notificaciones es común a todas tus apps de `github.io`.
 - Si no llega, abre ⋯ → «Recordatorio» → «Diagnóstico»: dice qué falla (permiso, instalación, versión antigua o que Android no ha despertado a la app).
 
+## App de Android (APK)
+
+Igual que el Calendario: GitHub fabrica la app sola cada vez que subes cambios y la deja en **Releases**. Dentro de la APK el recordatorio es una **alarma del propio móvil**: llega a su hora (por defecto a las 20:00) aunque la app esté cerrada, sin depender de Chrome.
+
+Enlace fijo de descarga: **`https://github.com/TU-USUARIO/TU-REPOSITORIO/releases/latest/download/MiAventura.apk`** (en la versión web también aparece en ⋯ → «App de Android»).
+
+**Preparación (una sola vez)**
+
+1. Sube a GitHub todo como siempre, **incluida la carpeta `android-app`**. No subas copias de seguridad (`mi-aventura-*.json`): el repositorio es público y contienen tus recuerdos.
+2. **La llave de firma:** en el repositorio → **Settings → Secrets and variables → Actions → New repository secret** → *Name*: **`APK_KEYSTORE`** → *Secret*: pega el contenido de **`llave-apk/APK_KEYSTORE.txt`** (la misma llave del Calendario) → **Add secret**.
+3. **El fabricante:** **Add file → Create new file** → nombre exacto **`.github/workflows/apk.yml`** → pega el contenido de **`android-app/apk.yml`** → **Commit changes**.
+4. Pestaña **Actions**: «App Android (APK)» tarda ~5 minutos. Con ✅, el APK está en **Releases**. Si sale ❌, abre el paso en rojo y haz una captura.
+
+**Pasar a la app (tus recuerdos no se mueven solos)**
+
+1. En la versión web: ⋯ → **Descargar copia de seguridad**.
+2. Descarga e instala `MiAventura.apk` (permite instalar desde Chrome; si Play Protect avisa → *Más detalles* → **Instalar de todas formas**).
+3. Abre la app → **Restaurar copia** → elige el archivo del paso 1.
+4. ⋯ → **Recordatorio**: actívalo, acepta las notificaciones y pulsa **Probar con la app cerrada** (cierra la app; al minuto llega el aviso). En Xiaomi, quita el ahorro de batería con el botón que aparece.
+5. Desactiva el recordatorio en la versión web y desinstálala del móvil, para no apuntar en dos sitios ni recibir dos avisos.
+
+**Actualizar:** sube los cambios a GitHub. En ~5 minutos hay APK nuevo, la app avisa («Hay una versión nueva → Descargar») y se instala encima **conservando tus recuerdos**.
+
+**Copias en la app:** «Descargar copia de seguridad» abre el menú *Compartir* de Android: guárdala en Drive, en Archivos o mándatela por correo.
+
 ## Copias de seguridad
 
 Los recuerdos se guardan **solo en el dispositivo** donde los apuntas. Desde ⋯ → «Descargar copia de seguridad» obtienes un `.json` que puedes guardar en la nube o restaurar en otro dispositivo. El punto naranja del menú te avisa si llevas más de un mes sin hacer copia.

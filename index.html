@@ -158,13 +158,22 @@
       <h3>Recordatorio</h3>
       <div class="reminder-box">
         <label class="switch"><input type="checkbox" id="reminder-toggle"><span class="switch-ui"></span>Avisarme si pasan 3 días sin apuntar nada</label>
+        <label class="reminder-time" id="reminder-time-wrap" hidden>Hora del aviso <input type="time" id="reminder-time" value="20:00"></label>
         <p class="reminder-status" id="reminder-status"></p>
-        <button type="button" class="btn btn-ghost" id="reminder-test" hidden>Probar el aviso</button>
+        <div class="reminder-actions">
+          <button type="button" class="btn btn-ghost" id="reminder-test" hidden>Probar el aviso</button>
+          <button type="button" class="btn btn-ghost" id="reminder-test-later" hidden>Probar con la app cerrada</button>
+        </div>
+        <div class="reminder-actions" id="reminder-fix"></div>
         <details class="reminder-diag" id="reminder-diag-wrap">
           <summary>Diagnóstico</summary>
           <dl id="reminder-diag"></dl>
         </details>
       </div>
+    </div>
+    <div class="menu-group" id="apk-group" hidden>
+      <h3>App de Android</h3>
+      <a class="menu-item" id="apk-link" href="#"><strong>Descargar la app de Android</strong><span>Avisos fiables con la app cerrada. Tus recuerdos no pasan solos: descarga antes una copia de seguridad y restáurala en la app.</span></a>
     </div>
     <div class="menu-group">
       <h3>Apariencia</h3>
@@ -202,7 +211,7 @@
         <button class="btn btn-primary" id="paste-go">Analizar texto</button>
       </div>
       <div id="import-json-box" class="drop" hidden>
-        <input type="file" id="json-input" accept=".json,application/json">
+        <input type="file" id="json-input" accept=".json,application/json,text/plain,application/octet-stream">
         <label for="json-input" class="drop-label"><strong>Elige la copia (.json)</strong><span>Exportada desde «Descargar copia de seguridad».</span></label>
       </div>
       <label class="field-inline">Año si el texto no lo indica <input type="number" id="import-year" min="1990" max="2100" inputmode="numeric"></label>
