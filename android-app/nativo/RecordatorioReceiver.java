@@ -6,16 +6,22 @@ import android.content.Intent;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-/** Recibe la hora del recordatorio y el reinicio del móvil */
+/** Recibe la hora del recordatorio, el reinicio del móvil y la respuesta del instalador de Android */
 public class RecordatorioReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context ctx, Intent intent) {
         String accion = intent.getAction();
         if (accion == null) return;
+        if (Actualizar.INSTALADA.equals(accion)) {
+            // Respuesta del instalador de Android (confirmar, error o cancelada)
+            Actualizar.resultado(ctx, intent);
+            return;
+        }
         if (!Recordatorio.DISPARAR.equals(accion)) {
             // Arranque del móvil, app actualizada o permiso de alarmas exactas concedido
             Recordatorio.reprogramar(ctx);
+            if (Intent.ACTION_MY_PACKAGE_REPLACED.equals(accion)) Actualizar.trasActualizar(ctx);
             return;
         }
         JSONObject a;

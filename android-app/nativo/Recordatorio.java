@@ -156,17 +156,22 @@ final class Recordatorio {
 
     // ---------------- Mostrar ----------------
 
-    private static int icono(Context ctx) {
+    static int icono(Context ctx) {
         int r = ctx.getResources().getIdentifier("ic_stat_aventura", "drawable", ctx.getPackageName());
         return r != 0 ? r : android.R.drawable.ic_popup_reminder;
     }
 
-    private static PendingIntent abrirApp(Context ctx, int codigo) {
+    /** Abre la app; con `nuevo`, directamente en el editor de hoy */
+    static PendingIntent abrirApp(Context ctx, int codigo, boolean nuevo) {
         Intent i = ctx.getPackageManager().getLaunchIntentForPackage(ctx.getPackageName());
         if (i == null) i = new Intent(ctx, MainActivity.class);
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
-        i.putExtra(EXTRA_NUEVO, true);
+        if (nuevo) i.putExtra(EXTRA_NUEVO, true);
         return PendingIntent.getActivity(ctx, codigo, i, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    }
+
+    private static PendingIntent abrirApp(Context ctx, int codigo) {
+        return abrirApp(ctx, codigo, true);
     }
 
     static void mostrar(Context ctx, int id, String titulo, String texto) {

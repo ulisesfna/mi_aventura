@@ -73,7 +73,13 @@ Enlace fijo de descarga: **`https://github.com/TU-USUARIO/TU-REPOSITORIO/release
 4. ⋯ → **Recordatorio**: actívalo, acepta las notificaciones y pulsa **Probar con la app cerrada** (cierra la app; al minuto llega el aviso). En Xiaomi, quita el ahorro de batería con el botón que aparece.
 5. Desactiva el recordatorio en la versión web y desinstálala del móvil, para no apuntar en dos sitios ni recibir dos avisos.
 
-**Actualizar:** sube los cambios a GitHub. En ~5 minutos hay APK nuevo, la app avisa («Hay una versión nueva → Descargar») y se instala encima **conservando tus recuerdos**.
+**Actualizar:** sube los archivos cambiados a GitHub como siempre. En ~5 minutos GitHub publica la versión nueva (el APK, la app web `web.zip` y `version.json`) y la app se actualiza sola, sin pasar por el navegador (igual que el Calendario):
+
+- **Casi siempre** (solo cambia la app web): al abrir la app descarga la versión nueva y se recarga con ella en unos segundos («Actualizando a la versión 1.N…»). No se instala nada. Si una versión descargada no llegara a arrancar, al volver a abrir la app se vuelve sola a la que trae el APK.
+- **Si cambia la parte de Android** (`android-app/`): aviso «Hay una versión nueva de la app → Actualizar». La app descarga el APK y abre el instalador de Android directamente (la primera vez pide permitir que *Mi aventura* instale apps). Al acabar, una notificación la vuelve a abrir de un toque.
+- También a mano: ⋯ → **Versión → Buscar actualizaciones**.
+
+Siempre se instala encima y **tus recuerdos se conservan**. Si cambias `android-app/apk.yml`, pégalo también en `.github/workflows/apk.yml` (es el que usa GitHub).
 
 **Copias en la app:** «Descargar copia de seguridad» abre el menú *Compartir* de Android: guárdala en Drive, en Archivos o mándatela por correo.
 
