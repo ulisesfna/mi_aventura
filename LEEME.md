@@ -14,6 +14,17 @@ Diario de recuerdos: los días que hiciste algo distinto, igual que en las notas
 
 Las marcas van por plan, como antes: en un mismo día puede haber un examen por la mañana y un plan hasta tarde por la noche.
 
+## Con quién y dónde
+
+Se escribe dentro del plan, igual que en las notas, y la app lo reconoce sola (también en todo lo que ya tenías apuntado):
+
+- **`w/`** = con quién: `Cena w/ Pau, Emma y Marc`, `Paseo w/AlexMarcosEmma` (pegados también vale) o `w/ los primos`.
+- **`at`** = dónde: `Barbacoa at Lau's` o `at casa de Lau` (en casa de Lau, y Lau cuenta como persona), `Concierto at Sala Apolo`.
+
+En el diario aparece detrás del plan con un icono. Toca un nombre o un sitio para ver su **ficha**: cuántos días, desde cuándo, con quién más suele estar, dónde y todos esos recuerdos. En **Resumen** salen las personas y los sitios del año (o de siempre).
+
+Al escribir, debajo del plan salen botones **Con quién** y **Dónde**, y luego los nombres que ya usas para no escribirlos distinto cada vez. Si una persona aparece con dos nombres (p. ej. «Emm» y «Emma»), en su ficha → **Cambiar el nombre o juntar** lo corrige en todos los días (con opción de deshacer).
+
 ## Usarla en el ordenador
 
 Haz doble clic en `index.html` y ya funciona. Los recuerdos se guardan en ese navegador.

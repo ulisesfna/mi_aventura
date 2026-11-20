@@ -145,6 +145,7 @@
   const filters = new Set();
   let peekDate = null;
   let global = false; // Resumen de todos los años
+  let who = null; // ficha abierta: 'p:clave' (persona) o 'l:clave' (sitio)
 
   /* ---------- piezas de HTML ---------- */
   function highlight(text, q) {
@@ -174,12 +175,203 @@
   const colorEmoji = (s) => s.replace(/\p{Extended_Pictographic}(?![︎️\u{1F3FB}-\u{1F3FF}])/gu,
     (c) => (/\p{Emoji_Presentation}/u.test(c) ? c : c + '️'));
 
+  /* ---------- con quién y dónde ----------
+   * Se escribe dentro del propio plan, como en las notas:
+   *   «Cena w/ Pau, Emma y Marc»  «Paseo w/AlexMarcosEmma»  «Barbacoa at Lau's»  «Concierto at Sala Apolo»
+   * Lo que se guarda sigue siendo el texto (así cuenta todo el historial, la exportación no cambia
+   * y la sincronización tampoco); aquí solo se interpreta para mostrarlo, buscarlo y contarlo.
+   *  - w/ …   personas. Nombres pegados (AlexMarcos) o separados por «,», «&», «y».
+   *           Varias palabras con mayúscula seguidas (Ana María) son una sola persona.
+   *           Algo en minúscula tras un separador («los primos») cuenta como un grupo.
+   *  - at …   sitio. «at Lau's» o «at casa de Lau» = en casa de Lau (y Lau cuenta como persona).
+   */
+  const W_RE = /(?<![\p{L}\p{N}])w\/(?!o(?:\s|$))\s*/iu;
+  const AT_RE = /(?<![\p{L}\p{N}'’])(?:at\s+|@\s*)(?=\p{L})/iu;
+  const W_CTX = /(?<![\p{L}\p{N}])w\/(?!o(?:\s|$))\s*/giu;
+  const AT_CTX = /(?<![\p{L}\p{N}'’])(?:at\s+|@)/giu;
+  const NAME_CH = /[\p{L}\p{M}'’.\-\s,&/]/u;
+  const LETTER_END = /[\p{L}\p{M}]$/u;
+  const personKey = (s) => norm(s).replace(/[^\p{L}\p{N}]+/gu, '');
+  const mkPerson = (name, s, e) => ({ name, key: personKey(name), s, e });
+
+  function readPeople(raw, base, out) {
+    const toks = [...raw.matchAll(/[\p{L}\p{M}][\p{L}\p{M}'’.\-]*[\p{L}\p{M}]|[\p{L}\p{M}]|[,&/]/gu)];
+    let end = 0;
+    let run = null; // nombre en curso (puede tener varias palabras con mayúscula)
+    let group = null; // grupo en minúscula: «los primos»
+    let afterSep = true;
+    const flush = () => {
+      for (const r of [run, group]) {
+        if (r && personKey(r.name)) { out.push(mkPerson(r.name, base + r.s, base + r.e)); end = r.e; }
+      }
+      run = group = null;
+    };
+    for (const x of toks) {
+      const w = x[0];
+      const s = x.index;
+      const e = s + w.length;
+      if (/^[,&/]$/.test(w) || /^(?:y|Y|and|i|e)$/.test(w)) { flush(); afterSep = true; continue; }
+      if (group) { group.name = raw.slice(group.s, e); group.e = e; continue; }
+      if (/^\p{Lu}/u.test(w)) {
+        const caps = w === w.toUpperCase() ? [] : [...w.matchAll(/\p{Lu}[^\p{Lu}]*/gu)];
+        if (caps.length > 1) { // AlexMarcosEmma: varias personas pegadas
+          flush();
+          for (const c of caps) {
+            const cs = s + c.index;
+            out.push(mkPerson(c[0], base + cs, base + cs + c[0].length));
+            end = cs + c[0].length;
+          }
+        } else if (run) { run.name = raw.slice(run.s, e); run.e = e; } // Ana María
+        else run = { name: w, s, e };
+        afterSep = false;
+        continue;
+      }
+      if (afterSep && !run) { group = { name: w, s, e }; afterSep = false; continue; }
+      break; // «w/ Pau en la playa»: lo que sigue vuelve al texto del plan
+    }
+    flush();
+    return end;
+  }
+
+  const PARTICLE = /^(?:de|del|dels|la|el|les|los|las|l['’]|d['’])$/i;
+  function readPlace(raw, base, res) {
+    const toks = [...raw.matchAll(/[\p{L}\p{M}][\p{L}\p{M}'’.\-]*[\p{L}\p{M}]|[\p{L}\p{M}]|[,&/]/gu)];
+    if (!toks.length || /^[,&/]$/.test(toks[0][0])) return 0;
+    const lower = !/^\p{Lu}/u.test(toks[0][0]);
+    const s0 = toks[0].index;
+    let e0 = s0;
+    for (const x of toks) {
+      const w = x[0];
+      if (/^[,&/]$/.test(w) || (x !== toks[0] && /^(?:y|and|i)$/.test(w))) break;
+      if (lower || /^\p{Lu}/u.test(w)) { e0 = x.index + w.length; continue; }
+      if (PARTICLE.test(w)) continue; // «Sala de Fiestas»: solo cuenta si sigue otra palabra
+      break;
+    }
+    const label = raw.slice(s0, e0);
+    let host = null;
+    let hs = s0;
+    let mm = label.match(/^(.+?)['’]s$/u);
+    if (mm) host = mm[1];
+    else if ((mm = label.match(/^(?:casa|ca)\s+(?:de\s+(?:la\s+|el\s+)?|d['’]|la\s+|el\s+|en\s+|l['’])?(?=\p{L})/iu))) {
+      host = label.slice(mm[0].length);
+      hs = s0 + mm[0].length;
+    }
+    if (host && personKey(host)) {
+      const p = mkPerson(host, base + hs, base + hs + host.length);
+      res.place = { home: true, label: host, key: 'h:' + p.key, host: p, s: base + s0, e: base + e0 };
+    } else {
+      if (!personKey(label)) return 0;
+      res.place = { home: false, label, key: 'x:' + personKey(label), s: base + s0, e: base + e0 };
+    }
+    return e0;
+  }
+
+  // Junta dos trozos de texto respetando si había espacio (los emojis suelen ir pegados)
+  function joinText(a, b) {
+    if (!b.trim()) return a;
+    if (!a.trim()) return b.trim();
+    const glue = /^\s/.test(b) || !/^[\p{Extended_Pictographic}\p{Regional_Indicator})\].,!?]/u.test(b.trim()) ? ' ' : '';
+    return a.replace(/\s+$/, '') + glue + b.trim();
+  }
+
+  function parseMeta(t) {
+    const res = { title: t, people: [], place: null };
+    const marks = [];
+    for (const [kind, re] of [['w', W_RE], ['at', AT_RE]]) {
+      const x = re.exec(t);
+      if (x) marks.push({ kind, ms: x.index, me: x.index + x[0].length });
+    }
+    if (!marks.length) return res;
+    marks.sort((a, b) => a.ms - b.ms);
+    let title = t.slice(0, marks[0].ms);
+    marks.forEach((mk, i) => {
+      const end = i + 1 < marks.length ? marks[i + 1].ms : t.length;
+      const seg = t.slice(mk.me, end);
+      let stop = 0;
+      while (stop < seg.length && NAME_CH.test(seg[stop])) stop++;
+      const used = mk.kind === 'w' ? readPeople(seg.slice(0, stop), mk.me, res.people) : readPlace(seg.slice(0, stop), mk.me, res);
+      if (!used) { title = joinText(title, t.slice(mk.ms, end)); return; }
+      title = joinText(title, seg.slice(used).replace(/^[\s,&/]+/, (m) => (/\s/.test(m) ? ' ' : '')));
+    });
+    res.title = title.replace(/\s+/g, ' ').trim();
+    return res;
+  }
+
+  const metaCache = new Map();
+  function meta(t) {
+    let m = metaCache.get(t);
+    if (!m) {
+      if (metaCache.size > 8000) metaCache.clear();
+      m = parseMeta(t);
+      metaCache.set(t, m);
+    }
+    return m;
+  }
+
+  // ¿Este plan es de la persona o sitio de la ficha?
+  function matchWho(m, w) {
+    const k = w.slice(2);
+    if (w[0] === 'p') return m.people.some((x) => x.key === k) || m.place?.host?.key === k;
+    return m.place?.key === k;
+  }
+
+  // Personas y sitios de unos días, con su nombre más usado y en qué días aparecen
+  function buildIndex(keys) {
+    const people = new Map();
+    const places = new Map();
+    const bump = (map, key, name, k, extra) => {
+      let r = map.get(key);
+      if (!r) { r = { key, spell: new Map(), days: new Set(), first: k, last: k, ...extra }; map.set(key, r); }
+      r.spell.set(name, (r.spell.get(name) || 0) + 1);
+      r.days.add(k);
+      if (k < r.first) r.first = k;
+      if (k > r.last) r.last = k;
+      return r;
+    };
+    for (const k of keys) {
+      for (const p of data.days[k].plans) {
+        const m = meta(p.t);
+        for (const x of m.people) bump(people, x.key, x.name, k);
+        if (!m.place) continue;
+        bump(places, m.place.key, m.place.label, k, { home: m.place.home });
+        if (m.place.home) (bump(people, m.place.host.key, m.place.host.name, k).hosted ||= new Set()).add(k);
+      }
+    }
+    const fin = (r) => Object.assign(r, { name: [...r.spell].sort((a, b) => b[1] - a[1])[0][0], n: r.days.size });
+    const sort = (a, b) => b.n - a.n || (a.last < b.last ? 1 : -1);
+    return { people: [...people.values()].map(fin).sort(sort), places: [...places.values()].map(fin).sort(sort) };
+  }
+
+  const hue = (key) => { let h = 7; for (const c of key) h = (h * 31 + c.codePointAt(0)) % 360; return h; };
+  function avatarHTML(name, key, cls = '') {
+    const ws = name.split(/\s+/).filter(Boolean);
+    const ini = ws.length > 1 && /^\p{Lu}/u.test(ws[1]) ? ws[0][0] + ws[1][0] : [...name][0] || '?';
+    return `<span class="av ${cls}" style="--h:${hue(key)}" aria-hidden="true">${esc(ini.toUpperCase())}</span>`;
+  }
+  const placeIcoHTML = (home, cls = '') => `<span class="av av-place ${cls}" aria-hidden="true">${icon(home ? 'home' : 'pin')}</span>`;
+  const listJoin = (a) => (a.length < 2 ? a.join('') : a.slice(0, -1).join(', ') + ' y ' + a[a.length - 1]);
+
+  function metaHTML(m, q) {
+    let h = '';
+    // El icono va pegado al primer nombre para que no se quede solo al final de una línea
+    if (m.people.length) {
+      const names = m.people.map((x, i) => `<span class="pp" data-who="p:${esc(x.key)}">${i ? '' : icon('people', 'pm-i')}${highlight(x.name, q)}</span>`);
+      h += `<span class="pm">${listJoin(names)}</span>`;
+    }
+    if (m.place) {
+      const pl = m.place;
+      h += `<span class="pm" title="${esc(pl.home ? `En casa de ${pl.label}` : pl.label)}"><span class="pp" data-who="l:${esc(pl.key)}">${icon(pl.home ? 'home' : 'pin', 'pm-i')}${highlight(pl.label, q)}</span></span>`;
+    }
+    return h;
+  }
+
   function planHTML(p, q) {
     const cls = ['plan'];
     if (p.late) cls.push('late');
     if (p.star) cls.push('star');
     if (p.exam) cls.push('exam');
-    return `<span class="${cls.join(' ')}">${p.exam ? icon('cap', 'mk') : ''}${highlight(colorEmoji(p.t), q)}${p.late ? icon('moon', 'mk') : ''}</span>`;
+    const m = meta(p.t);
+    return `<span class="${cls.join(' ')}">${p.exam ? icon('cap', 'mk') : ''}${highlight(colorEmoji(m.title), q)}${p.late ? icon('moon', 'mk') : ''}${metaHTML(m, q)}</span>`;
   }
   const plansHTML = (e, q) => e.plans.map((p) => planHTML(p, q)).join('<span class="sep">+</span>');
 
@@ -206,7 +398,7 @@
   /* ---------- Diario ---------- */
   function renderDiario() {
     const root = $('#view-diario');
-    if (query || filters.size) { renderSearch(root); return; }
+    if (query || filters.size || who) { renderSearch(root); return; }
     const t = todayISO();
     const [ty, tm] = parts(t);
     const keys = yearKeys(year);
@@ -290,13 +482,15 @@
     const hits = allKeys().reverse().filter((k) => {
       const e = data.days[k];
       for (const f of filters) if (!hasFlag(e, f)) return false;
+      if (who && !e.plans.some((p) => matchWho(meta(p.t), who))) return false;
       return !q || norm(entryText(e)).includes(q) || (typeof e.trip === 'string' && norm(e.trip).includes(q));
     });
+    const card = who ? whoCardHTML(who) : '';
     if (!hits.length) {
-      root.innerHTML = `<div class="empty small"><h2>Nada por aquí</h2><p>Prueba con otra palabra o quita algún filtro.</p></div>`;
+      root.innerHTML = card + `<div class="empty small"><h2>Nada por aquí</h2><p>Prueba con otra palabra o quita algún filtro.</p></div>`;
       return;
     }
-    let html = `<p class="result-count">${plural(hits.length, 'día encontrado', 'días encontrados')}</p>`;
+    let html = card + (who && !q && !filters.size ? '' : `<p class="result-count">${plural(hits.length, 'día encontrado', 'días encontrados')}</p>`);
     let group = '';
     for (const k of hits) {
       const g = k.slice(0, 7);
@@ -310,6 +504,187 @@
     root.innerHTML = html + '</section>';
   }
 
+  /* ---------- ficha de una persona o un sitio ---------- */
+  function whoEntry(w, idx = buildIndex(allKeys())) {
+    const k = w.slice(2);
+    return (w[0] === 'p' ? idx.people : idx.places).find((r) => r.key === k) || null;
+  }
+  const placeName = (r) => (r.home ? `Casa de ${r.name}` : r.name);
+  function whoName(w) {
+    const r = whoEntry(w);
+    return !r ? '…' : w[0] === 'p' ? r.name : placeName(r);
+  }
+  const withYear = (k) => `${fmtShort(k)} ${k.slice(0, 4)}`;
+
+  function whoCardHTML(w) {
+    const idx = buildIndex(allKeys());
+    const r = whoEntry(w, idx);
+    if (!r) return `<div class="card who-card"><p class="muted">Ya no aparece en ningún recuerdo.</p></div>`;
+    const isP = w[0] === 'p';
+    const pBy = new Map(idx.people.map((x) => [x.key, x]));
+    const lBy = new Map(idx.places.map((x) => [x.key, x]));
+    const t = todayISO();
+    const days = [...r.days].sort();
+    const co = new Map();
+    const at = new Map();
+    const emo = new Map();
+    const years = new Map();
+    let nights = 0;
+    let stars = 0;
+    const count = (map, k, by) => map.set(k, (map.get(k) || 0) + by);
+    for (const k of days) {
+      const ps = data.days[k].plans.filter((p) => matchWho(meta(p.t), w));
+      const late = ps.some((p) => p.late);
+      if (late) nights++;
+      if (ps.some((p) => p.star)) stars++;
+      const y = years.get(k.slice(0, 4)) || { d: 0, l: 0 };
+      y.d++;
+      if (late) y.l++;
+      years.set(k.slice(0, 4), y);
+      const seen = new Set();
+      for (const p of ps) {
+        const m = meta(p.t);
+        for (const x of [...m.people, ...(m.place?.home ? [m.place.host] : [])]) {
+          if ((isP && x.key === r.key) || seen.has('p' + x.key)) continue;
+          seen.add('p' + x.key);
+          count(co, x.key, 1);
+        }
+        if (isP && m.place && !seen.has('l' + m.place.key)) { seen.add('l' + m.place.key); count(at, m.place.key, 1); }
+        for (const g of graphemes(m.title)) if (EMOJI_RE.test(g)) count(emo, g.replace(/️/g, ''), 1);
+      }
+    }
+    const top = (map, n) => [...map].sort((a, b) => b[1] - a[1]).slice(0, n);
+    const upcoming = days.filter((k) => k > t).length;
+    const lastPast = [...days].reverse().find((k) => k <= t);
+    const title = isP ? r.name : placeName(r);
+    const ico = isP ? avatarHTML(r.name, r.key, 'av-l') : placeIcoHTML(r.home, 'av-l');
+    let yearBars = '';
+    if (years.size > 1) {
+      const ys = [...years.keys()].map(Number);
+      const items = [];
+      for (let y = Math.min(...ys); y <= Math.max(...ys); y++) {
+        const v = years.get(String(y)) || { d: 0, l: 0 };
+        items.push({ label: years.size > 6 ? `’${String(y).slice(2)}` : y, d: v.d, l: v.l, title: `${y}: ${plural(v.d, 'día', 'días')}` });
+      }
+      yearBars = `<div class="who-sec who-years"><p class="eyebrow">Año a año</p>${barsHTML(items)}</div>`;
+    }
+    const coList = top(co, 10).filter(([k]) => pBy.has(k));
+    const atList = top(at, 8).filter(([k]) => lBy.has(k));
+    const emos = top(emo, 12);
+    const others = [...r.spell.keys()].filter((s) => s !== r.name);
+    const canRename = isP || !r.home;
+    const choices = (isP ? idx.people : idx.places.filter((x) => !x.home)).filter((x) => x.key !== r.key);
+    return `<div class="card who-card">
+      <div class="who-head">${ico}<div>
+        <h2>${esc(title)}</h2>
+        <p>${plural(r.n, isP ? 'día juntos' : 'día', isP ? 'días juntos' : 'días')} · desde el ${withYear(r.first)}${lastPast && lastPast !== r.first ? ` · último: ${withYear(lastPast)}` : ''}</p>
+      </div></div>
+      <div class="who-stats">
+        ${nights ? `<span>${icon('moon')}${plural(nights, 'noche', 'noches')} hasta tarde</span>` : ''}
+        ${stars ? `<span>${icon('star')}${plural(stars, 'destacado', 'destacados')}</span>` : ''}
+        ${isP && r.hosted ? `<span>${icon('home')}${plural(r.hosted.size, 'vez', 'veces')} en su casa</span>` : ''}
+        ${upcoming ? `<span>${icon('today')}${upcoming} por venir</span>` : ''}
+      </div>
+      ${!isP && r.home && pBy.has(r.key.slice(2)) ? `<div class="who-sec"><div class="who-links"><button class="who-link" data-who="p:${esc(r.key.slice(2))}">${avatarHTML(r.name, r.key.slice(2), 'av-s')}Ver a ${esc(r.name)}</button></div></div>` : ''}
+      ${coList.length ? `<div class="who-sec"><p class="eyebrow">${isP ? 'Suele estar con' : 'Con quién'}</p><div class="who-links">${coList.map(([k, n]) => `<button class="who-link" data-who="p:${esc(k)}">${avatarHTML(pBy.get(k).name, k, 'av-s')}${esc(pBy.get(k).name)}<small>${n}</small></button>`).join('')}</div></div>` : ''}
+      ${atList.length ? `<div class="who-sec"><p class="eyebrow">Dónde</p><div class="who-links">${atList.map(([k, n]) => `<button class="who-link" data-who="l:${esc(k)}">${placeIcoHTML(lBy.get(k).home, 'av-s')}${esc(placeName(lBy.get(k)))}<small>${n}</small></button>`).join('')}</div></div>` : ''}
+      ${yearBars}
+      ${emos.length ? `<p class="who-emo">${emos.map(([e]) => colorEmoji(e)).join(' ')}</p>` : ''}
+      ${canRename ? `<details class="who-edit">
+        <summary>Cambiar el nombre o juntar con ${isP ? 'otra persona' : 'otro sitio'}</summary>
+        <form class="who-rename" data-rename="${esc(w)}" autocomplete="off">
+          <input name="to" value="${esc(r.name)}" list="who-list" maxlength="40" aria-label="Nombre nuevo" required>
+          <button class="btn btn-primary" type="submit">Cambiar</button>
+        </form>
+        <p class="who-note" data-default="${esc(`Se cambia en ${plural(r.n, 'día', 'días')}${others.length ? ` (también donde pone ${listJoin(others.map((s) => `«${s}»`))})` : ''}. Si escribes el nombre de ${isP ? 'otra persona' : 'otro sitio'}, se juntan.`)}"></p>
+        <datalist id="who-list">${choices.slice(0, 300).map((x) => `<option value="${esc(x.name)}">`).join('')}</datalist>
+      </details>` : ''}
+    </div>`;
+  }
+
+  // Cambia el nombre en el texto de todos los planes donde aparece (y así se junta con otro si coincide)
+  function renameWho(w, to) {
+    to = to.replace(/\s+/g, ' ').trim();
+    if (!personKey(to) || /[+()@]|w\//i.test(to) || EMOJI_RE.test(to)) { toast('Escribe solo el nombre'); return; }
+    const isP = w[0] === 'p';
+    const key = w.slice(2);
+    const before = new Map();
+    for (const k of allKeys()) {
+      const e = data.days[k];
+      let touched = false;
+      const plans = e.plans.map((p) => {
+        const m = meta(p.t);
+        const spans = isP
+          ? [...m.people.filter((x) => x.key === key), ...(m.place?.host?.key === key ? [m.place.host] : [])]
+          : m.place && !m.place.home && m.place.key === key ? [m.place] : [];
+        if (!spans.length) return p;
+        let t = p.t;
+        for (const x of spans.sort((a, b) => b.s - a.s)) {
+          let ins = to;
+          // Dentro de «AlexMarcos» un nombre con espacios o en minúscula necesita comas para no mezclarse
+          if (isP && (/\s/.test(to) || !/^\p{Lu}/u.test(to) || to === to.toUpperCase())) {
+            if (LETTER_END.test(t.slice(0, x.s))) ins = ', ' + ins;
+            if (/^[\p{L}\p{M}]/u.test(t.slice(x.e)) && !/^['’]s/.test(t.slice(x.e))) ins += ', ';
+          }
+          t = t.slice(0, x.s) + ins + t.slice(x.e);
+        }
+        touched = true;
+        return { ...p, t };
+      });
+      if (touched) { before.set(k, e); data.days[k] = { ...e, plans }; }
+    }
+    if (!before.size) return;
+    save();
+    const prevWho = w;
+    who = (isP ? 'p:' : 'l:x:') + personKey(to);
+    render();
+    window.scrollTo({ top: 0 });
+    toast(`Cambiado en ${plural(before.size, 'día', 'días')}`, 'Deshacer', () => {
+      for (const [k, e] of before) data.days[k] = e;
+      save();
+      who = prevWho;
+      render();
+    });
+  }
+
+  document.addEventListener('submit', (ev) => {
+    const f = ev.target.closest('.who-rename');
+    if (!f) return;
+    ev.preventDefault();
+    renameWho(f.dataset.rename, f.elements.to.value);
+  });
+  document.addEventListener('input', (ev) => {
+    const f = ev.target.closest('.who-rename');
+    if (!f) return;
+    const w = f.dataset.rename;
+    const k = personKey(ev.target.value);
+    const idx = buildIndex(allKeys());
+    const other = k && k !== w.slice(w[0] === 'p' ? 2 : 4)
+      ? (w[0] === 'p' ? idx.people : idx.places).find((x) => x.key === (w[0] === 'p' ? k : 'x:' + k)) : null;
+    const note = f.parentNode.querySelector('.who-note');
+    note.textContent = other ? `Se juntará con «${other.name}» (${plural(other.n, 'día', 'días')}).` : note.dataset.default;
+    note.classList.toggle('merge', !!other);
+  });
+  document.addEventListener('toggle', (ev) => {
+    const n = ev.target.classList?.contains('who-edit') && ev.target.querySelector('.who-note');
+    if (n && !n.textContent) n.textContent = n.dataset.default;
+  }, true);
+
+  function setWho(w) {
+    who = w;
+    if (w) {
+      query = '';
+      $('#search').value = '';
+      $('#searchbar').hidden = false;
+      $('#search-toggle').setAttribute('aria-expanded', 'true');
+      view = 'diario';
+    }
+    // Al quitar la ficha sin nada más buscado, se vuelve al diario normal
+    if (!w && !query && !filters.size) { toggleSearch(false); return; }
+    render();
+    window.scrollTo({ top: 0 });
+  }
+
   function renderMonths() {
     const nav = $('#months');
     const counts = new Array(13).fill(0);
@@ -319,7 +694,7 @@
   }
 
   function spy() {
-    if (view !== 'diario' || query || filters.size) { $('#today-btn').hidden = true; return; }
+    if (view !== 'diario' || query || filters.size || who) { $('#today-btn').hidden = true; return; }
     const head = $('.topbar').getBoundingClientRect().height;
     let current = null;
     for (const s of $$('#view-diario .month[data-month]')) {
@@ -441,8 +816,8 @@
       const seen = new Set();
       for (const p of data.days[k].plans) {
         if (p.exam) continue;
-        let t = p.t.replace(/\([^)]*\)/g, ' ').replace(EMOJI_STRIP, ' ');
-        t = t.split(/\s(?:w\/|c\/|a\/|con\s|at\s|en\s)|\sw\//i)[0];
+        let t = meta(p.t).title.replace(/\([^)]*\)/g, ' ').replace(EMOJI_STRIP, ' ');
+        t = t.split(/\s(?:c\/|a\/|con\s|en\s)/i)[0];
         t = t.replace(/\s+\d+\s*$/, '').replace(/\s+/g, ' ').trim();
         if (t.length < 3) continue;
         const key = norm(t);
@@ -519,6 +894,30 @@
     const top = classics(keys).slice(0, global ? 14 : 10);
     const lastMonth = global || year < cy ? 12 : +t.slice(5, 7);
 
+    // Con quién y dónde
+    const idx = buildIndex(keys);
+    const ppl = idx.people.slice(0, global ? 15 : 10);
+    const plc = idx.places.slice(0, global ? 12 : 8);
+    let newPeople = 0;
+    if (!global && allKeys()[0] < `${year}-01-01`) {
+      const firstSeen = new Map(buildIndex(allKeys()).people.map((r) => [r.key, r.first]));
+      newPeople = idx.people.filter((r) => firstSeen.get(r.key).startsWith(year + '-')).length;
+    }
+    const homes = idx.places.filter((r) => r.home).length;
+    const rowHTML = (w, ico, name, n, max, h) => `<li><button data-who="${esc(w)}">${ico}<span class="ppl-n">${esc(name)}</span><span class="ppl-bar"><i style="width:${(n / max) * 100}%${h == null ? '' : `;--h:${h}`}"></i></span><b>${n}</b></button></li>`;
+    const peopleHTML = !ppl.length && !plc.length ? '' : `<div class="grid2${ppl.length && plc.length ? '' : ' single'}">
+      ${ppl.length ? `<div class="card">
+        <h3>Con quién</h3>
+        <ul class="ppl">${ppl.map((r) => rowHTML('p:' + r.key, avatarHTML(r.name, r.key), r.name, r.n, ppl[0].n, hue(r.key))).join('')}</ul>
+        <p class="foot">${plural(idx.people.length, 'persona', 'personas')}${newPeople ? ` · <strong>${newPeople} ${newPeople === 1 ? 'nueva' : 'nuevas'}</strong> este año` : ''}</p>
+      </div>` : ''}
+      ${plc.length ? `<div class="card">
+        <h3>Dónde</h3>
+        <ul class="ppl ppl-place">${plc.map((r) => rowHTML('l:' + r.key, placeIcoHTML(r.home), placeName(r), r.n, plc[0].n)).join('')}</ul>
+        <p class="foot">${plural(idx.places.length, 'sitio', 'sitios')}${homes ? `, ${homes} de ${homes === 1 ? 'ellos una casa' : 'ellos casas'}` : ''}</p>
+      </div>` : ''}
+    </div>`;
+
     // Global: año a año (también los años sin nada apuntado entre medias)
     let yearBars = [];
     let records = [];
@@ -573,6 +972,7 @@
           <dl class="records">${records.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>
         </div>
       </div>` : ''}
+      ${peopleHTML}
       ${top.length ? `<div class="card">
         <h3>${global ? 'Los clásicos de siempre' : 'Los clásicos del año'}</h3>
         <ol class="classics">${top.map((c) => `<li><span>${esc(c.t)}</span><b>×${c.n}</b></li>`).join('')}</ol>
@@ -613,7 +1013,10 @@
     $('#year-next').setAttribute('aria-label', view === 'resumen' && year >= maxY ? 'Resumen de todos los años' : 'Año siguiente');
     for (const v of ['diario', 'anio', 'resumen']) $('#view-' + v).hidden = view !== v;
     for (const b of $$('.tab')) b.setAttribute('aria-current', b.dataset.view === view ? 'page' : 'false');
-    const searching = !!(query || filters.size);
+    const searching = !!(query || filters.size || who);
+    const wc = $('#who-chip');
+    wc.hidden = !who;
+    if (who) wc.innerHTML = `${icon(who[0] === 'p' ? 'people' : who[2] === 'h' ? 'home' : 'pin')}${esc(whoName(who))}${icon('close', 'chip-x')}`;
     document.body.classList.toggle('searching', searching);
     $('#months').hidden = view !== 'diario' || searching;
     $('.year-switch').classList.toggle('muted-switch', view === 'diario' && searching);
@@ -640,6 +1043,7 @@
 
   function revealDay(k) {
     query = '';
+    who = null;
     filters.clear();
     $('#search').value = '';
     $$('#filters .chip').forEach((c) => c.classList.remove('on'));
@@ -698,7 +1102,7 @@
   function makeRow(p) {
     const row = document.createElement('div');
     row.className = 'plan-row';
-    row.innerHTML = `<input class="plan-input" type="text" placeholder="¿Qué pasó? Separa planes con +" enterkeyhint="next" aria-label="Plan">
+    row.innerHTML = `<input class="plan-input" type="text" placeholder="¿Qué pasó? Separa planes con +" enterkeyhint="next" aria-label="Plan" autocapitalize="sentences">
       <div class="plan-tools">
         <button type="button" class="tg tg-late" data-flag="late" aria-pressed="false" title="Acabó pasadas las 00:00">${icon('moon')}<span class="l-long">Hasta tarde</span><span class="l-short">Noche</span></button>
         <button type="button" class="tg tg-star" data-flag="star" aria-pressed="false" title="Plan esperado, relevante o con mucho impacto">${icon('star')}<span>Destacado</span></button>
@@ -800,6 +1204,8 @@
 
   function openEditor(k, opts = {}) {
     editing = { day: k, drafts: new Map(), moves: [] };
+    assistIdx = null;
+    assist.hidden = true;
     $('#move-box').hidden = true;
     $('#move-done').hidden = true;
     dateInput.value = k;
@@ -920,6 +1326,110 @@
     input.focus();
     input.setSelectionRange(pos, pos);
   });
+  /* Ayuda para «w/» y «at» mientras escribes: debajo del plan salen botones para añadir con quién
+   * y dónde y, una vez puesto, las personas y sitios que ya usas (los más frecuentes primero). */
+  const assist = document.createElement('div');
+  assist.className = 'assist';
+  assist.hidden = true;
+  let assistIdx = null;
+
+  function caretContext(input) {
+    const v = input.value;
+    const pos = input.selectionEnd ?? v.length;
+    const from = v.lastIndexOf('+', pos - 1) + 1;
+    const to = v.indexOf('+', pos);
+    const whole = v.slice(from, to === -1 ? v.length : to);
+    const piece = v.slice(from, pos);
+    const has = { w: !!whole.match(W_CTX), at: !!whole.match(AT_CTX) };
+    let mk = null;
+    for (const [kind, re] of [['w', W_CTX], ['at', AT_CTX]]) {
+      for (const x of piece.matchAll(re)) if (!mk || x.index > mk.i) mk = { kind, i: x.index, end: x.index + x[0].length };
+    }
+    const seg = mk ? piece.slice(mk.end) : '';
+    if (!mk || [...seg].some((c) => !NAME_CH.test(c))) return { kind: null, has, pos };
+    if (mk.kind === 'at') return { kind: 'at', partial: seg.replace(/^\s+/, ''), has, pos };
+    let partial = seg.match(/[\p{L}\p{M}'’.\-]*$/u)[0];
+    const camel = partial.match(/\p{Lu}[^\p{Lu}]*$/u);
+    if (camel && camel.index > 0) partial = camel[0];
+    const done = [];
+    readPeople(seg.slice(0, seg.length - partial.length), 0, done);
+    return { kind: 'w', partial, exclude: new Set(done.map((x) => x.key)), has, pos };
+  }
+
+  function renderAssist(input) {
+    const row = input.closest('.plan-row');
+    if (!row) return;
+    if (assist.parentNode !== row) $('.plan-tools', row).before(assist);
+    assistIdx ||= buildIndex(allKeys());
+    const c = caretContext(input);
+    const q = norm(c.partial || '');
+    let html = '';
+    if (c.kind === 'w') {
+      // Lo que se está escribiendo se completa; si ya es un nombre conocido, se ofrece añadir a otros
+      const pk = personKey(c.partial);
+      const exact = !!pk && assistIdx.people.some((r) => r.key === pk);
+      const free = assistIdx.people.filter((r) => !c.exclude.has(r.key) && r.key !== pk);
+      const comp = q ? free.filter((r) => norm(r.name).startsWith(q) || r.key.startsWith(pk)) : [];
+      const add = !q || exact ? free.filter((r) => !comp.includes(r)) : [];
+      const chip = (r, mode) => `<button type="button" class="as-chip" data-mode="${mode}" data-name="${esc(r.name)}">${avatarHTML(r.name, r.key, 'av-s')}${mode === 'add' && (exact || c.exclude.size) ? '+ ' : ''}${esc(r.name)}</button>`;
+      html = [...comp.map((r) => chip(r, 'complete')), ...add.map((r) => chip(r, 'add'))].slice(0, 12).join('');
+      if (!html && !q) html = '<span class="as-hint">¿Con quién? «Pau, Emma» o «PauEmma»</span>';
+    } else if (c.kind === 'at') {
+      html = assistIdx.places.filter((r) => !q || norm(r.name).startsWith(q) || (r.home && norm('casa de ' + r.name).startsWith(q)))
+        .slice(0, 12).map((r) => `<button type="button" class="as-chip" data-mode="complete" data-name="${esc(r.home ? r.name + "'s" : r.name)}">${placeIcoHTML(r.home, 'av-s')}${esc(placeName(r))}</button>`).join('');
+      if (!html && !q) html = '<span class="as-hint">Un sitio, o «Lau\'s» para decir en casa de Lau</span>';
+    }
+    // Botones para añadir lo que falte (con quién / dónde), siempre a la vista al principio
+    if (input.value.trim()) {
+      let add = '';
+      if (!c.has.w && c.kind !== 'w') add += `<button type="button" class="as-chip as-add" data-ins="w/ ">${icon('people')}Con quién</button>`;
+      if (!c.has.at && c.kind !== 'at') add += `<button type="button" class="as-chip as-add" data-ins="at ">${icon('pin')}Dónde</button>`;
+      html = add + html;
+    }
+    assist.innerHTML = html;
+    assist.hidden = !html;
+  }
+
+  assist.addEventListener('pointerdown', (ev) => { if (ev.target.closest('button')) ev.preventDefault(); });
+  assist.addEventListener('click', (ev) => {
+    const b = ev.target.closest('button');
+    const input = b && $('.plan-input', assist.closest('.plan-row'));
+    if (!input) return;
+    const v = input.value;
+    const pos = input.selectionEnd ?? v.length;
+    let s = pos;
+    let ins;
+    if (b.dataset.ins) {
+      ins = (s > 0 && !/\s$/.test(v.slice(0, s)) ? ' ' : '') + b.dataset.ins;
+    } else if (b.dataset.mode === 'complete') {
+      s = pos - (caretContext(input).partial || '').length;
+      ins = b.dataset.name;
+    } else {
+      // Otro nombre después de uno ya puesto: separado con coma
+      ins = b.dataset.name;
+      if (LETTER_END.test(v.slice(0, s).trimEnd())) {
+        s = v.slice(0, s).trimEnd().length;
+        ins = ', ' + ins;
+      }
+    }
+    input.value = v.slice(0, s) + ins + v.slice(pos);
+    const p = s + ins.length;
+    input.focus();
+    input.setSelectionRange(p, p);
+    renderAssist(input);
+  });
+  for (const list of [savedList, planList]) {
+    const onInput = (ev) => { if (ev.target.classList?.contains('plan-input')) renderAssist(ev.target); };
+    list.addEventListener('input', onInput);
+    list.addEventListener('focusin', onInput);
+    list.addEventListener('click', onInput);
+    list.addEventListener('keyup', (ev) => { if (/^(Arrow|Home|End)/.test(ev.key)) onInput(ev); });
+    list.addEventListener('focusout', (ev) => {
+      if (!ev.target.classList?.contains('plan-input') || assist.contains(ev.relatedTarget)) return;
+      setTimeout(() => { if (!document.activeElement?.classList.contains('plan-input')) assist.hidden = true; }, 120);
+    });
+  }
+
   // Cambiar la fecha = pasar a ese día (no mover lo apuntado en el día anterior)
   dateInput.addEventListener('change', () => {
     const k = dateInput.value;
@@ -1167,7 +1677,7 @@
   }
 
   /* ---------- recordatorio ---------- */
-  const APP_VERSION = 'v10'; // mantener igual que VERSION en sw.js
+  const APP_VERSION = 'v11'; // mantener igual que VERSION en sw.js
   const R = window.MiAventuraRecordatorio;
   const REMINDER_MSG = {
     off: `Te llegará una notificación si pasan ${R.DAYS} días sin que apuntes nada.`,
@@ -1446,6 +1956,8 @@
     if (tab) { setView(tab.dataset.view); return; }
     const act = t.closest('[data-action]');
     if (act) { runAction(act.dataset.action); return; }
+    const wb = t.closest('[data-who]');
+    if (wb && !wb.closest('dialog')) { setWho(wb.dataset.who); return; }
     const add = t.closest('[data-add]');
     if (add) { openEditor(add.dataset.add); return; }
     const edit = t.closest('[data-edit]');
@@ -1522,6 +2034,7 @@
       $('#search').focus();
     } else {
       query = '';
+      who = null;
       filters.clear();
       $('#search').value = '';
       $$('#filters .chip').forEach((c) => c.classList.remove('on'));
@@ -1543,6 +2056,7 @@
   $('#filters').addEventListener('click', (ev) => {
     const c = ev.target.closest('.chip');
     if (!c) return;
+    if (c.id === 'who-chip') { setWho(null); return; }
     const f = c.dataset.filter;
     if (filters.has(f)) filters.delete(f); else filters.add(f);
     c.classList.toggle('on', filters.has(f));
